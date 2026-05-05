@@ -1,0 +1,41 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2021 grommunio GmbH
+.TH gromox\-abktconv 8 "" "Gromox" "Gromox admin reference"
+.SH Name
+gromox\-abktconv \(em Utility for converting between ABKT and JSON
+.SH Synopsis
+\fBgromox\-abktconv\fP {\fB\-b\fP|\fB\-j\fP} [\fB\-gw?\fP] [\fB\-c\fP \fIcpid\fP]
+.SH Description
+gromox\-abktconv can be used to convert between data streams as specified in
+MS-OXOABKT and a textual representation. It reads and writes to standard input
+and output, respectively.
+.SH Options
+.TP
+\fB\-b\fP
+Produce type-1 ABKT from JSON.
+.TP
+\fB\-c\fP \fIcpid\fP
+When converting to ABKT (\-b), convert strings to the given codepage and emit
+them as 8-bit strings.
+.TP
+\fB\-g\fP
+When converting to ABKT (\-b), emit extraneous gaps in the data stream to mimic
+what Exchange would do. Without \-g, the ABKT stream will have no unnecessary
+gaps.
+.TP
+\fB\-j\fP
+Produce JSON from ABKT type-1 or type-2.
+.TP
+\fB\-w\fP
+When converting to ABKT (\-b), emit strings in UTF-16 form. This is the
+default.
+.TP
+\fB\-?\fP
+Display option summary.
+.SH Normative references
+.IP \(bu 4
+MS-OXOABKT: Address Book User Interface Templates Protocol
+.IP \(bu 4
+oxoabkt.rst: Type-2 ABKT template protocol
+.SH See also
+\fBgromox\fP(7), \fBgromox-abktpull\fP(8gx)

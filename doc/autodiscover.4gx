@@ -1,0 +1,100 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2025 grommunio GmbH
+.TH autodiscover 4gx "" "Gromox" "Gromox admin reference"
+.SH Name
+autodiscover \(em AutoDiscover HTTP Service Protocol handler (responder)
+.SH Description
+.PP
+A client would make a HTTP request to the /Autodiscover/Autodiscover.xml
+endpoint, which is handled by the Gromox oxdisco component.
+.PP
+The Autodiscover response contains the home server name and protocol options
+(MAPI-RPC-HTTP, MAPIHTTP, IMAP, etc.). A client uses this to set up the mailbox
+with MAPI services (like ``MSEMS`` or ``INTERSTOR``) within a MAPI profile.
+.SH Configuration directives (gromox.cfg)
+The following directives are recognized when they appear in
+/etc/gromox/gromox.cfg.
+.TP
+\fBoxdisco_advertise_mh\fP
+This setting controls whether the AutoDiscover response should include a EXHTTP
+Protocol section. Possible values: \fIyes\fP, \fIno\fP, \fInot_old_mso\fP,
+\fIonly_new_mso\fP. The latter two values can be used to finely control
+emission in case of clients other than Outlook.
+.br
+Default: \fIyes\fP
+.TP
+\fBoxdisco_advertise_rpch\fP
+This setting controls whether the AutoDiscover response should include
+EXCH/EXPR Protocol sections. Possible values: \fIyes\fP, \fIno\fP,
+\fIonly_old_mso\fP, \fInot_new_mso\fP. The latter two values can be used to
+finely control emission in case of clients other than Outlook.
+.br
+Default: \fIyes\fP
+.TP
+\fBoxdisco_exonym\fP
+Globally valid name pointing to a default mailbox server in the Gromox server
+forest. (Since AutoDiscover nodes are also mailbox nodes, the exonym should
+simply be: this server's hostname).
+.br
+Default: (inherited from http.cfg:host_id, which defaults to the system FQDN)
+.TP
+\fBoxdisco_pretty_response\fP
+A debugging knob to make the Autodiscovery handler emit indented XML responses.
+.br
+Default: \fIno\fP
+.TP
+\fBoxdisco_request_logging\fP
+Log AutoDiscover requests. This is independent of http.cfg:http_debug, and
+setting both would log requests twice.
+.br
+Default: \fIno\fP
+.TP
+\fBoxdisco_response_logging\fP
+Log AutoDiscover responses. This is independent of http.cfg:http_debug, and
+setting both would log responses twice.
+.br
+Default: \fIno\fP
+.TP
+\fBoxdisco_validate_scndrequest\fP
+When OL opens a non-default store (store of another user) or a public store, it
+may also make an AutoDiscover inquiry for the extra store. This setting
+controls whether the AutoDiscover handler should perform a
+permission check on non-default stores and possibly reject returning connection
+details. (Inquiry of public stores are always permitted.)
+.br
+Default: \fIyes\fP
+.TP
+\fBx500_org_name\fP
+.br
+Default: (unspecified)
+.SH Configuration directives (autodiscover.cfg)
+The following directives are recognized when they appear in
+/etc/gromox/autodiscover.cfg. autodiscover.cfg is obsolete in favor of
+gromox.cfg.
+.TP
+\fBx500_org_name\fP
+Same as gromox.cfg:x500_org_name.
+.br
+Default: (unspecified)
+.SH Configuration directives (autodiscover.ini)
+The following directives are recognized when they appear in
+/etc/gromox/autodiscover.ini. autodiscover.ini is obsolete in favor of
+gromox.cfg.
+.TP
+\fBorganization\fP
+Same as gromox.cfg:x500_org_name.
+.SH Outlook notes
+When Outlook is active, it is possible to Ctrl-MouseBtn3 (right click) on the
+status tray icon to call up a context menu, from which "Test Email
+Autoconfiguration..." can be selected to debug AutoDiscover requests and
+responses from the Windows side.
+.SH Exchange notes
+In EXC, MH can be toggled on/off via an EAC Shell command:
+`Set-OrganizationConfig -MapiHttpEnable $false` (or $true).
+.SH Normative references
+.IP \(bu 4
+MS-OXDISCO: Autodiscover HTTP Service Protocol
+.IP \(bu 4
+MS-OXDSCLI: Autodiscover Publishing and Lookup Protocol
+.SH See also
+\fBgromox\fP(7), \fBautodiscover\fP(7)

@@ -1,0 +1,12 @@
+Subject: Delivery failure, user doesn't exist!
+
+Hi,
+  Your message to "%(rcpt)" can not be displayed to the user.
+
+Below is the original mail information:
+   Time:    %(time)
+   From:    %(from)
+   To:      %(rcpt)
+   Subject: %(subject)
+   Length:  %(length)
+	

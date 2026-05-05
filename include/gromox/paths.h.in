@@ -1,0 +1,29 @@
+/* The default paths */
+#pragma once
+#include <gromox/defs.h>
+#define PKGSYSCONFDIR "/etc/gromox"
+#define PKGLIBDIR "/usr/lib/gromox"
+#define PKGLIBEXECDIR "/usr/libexec/gromox"
+#define DATADIR "/usr/share"
+#define LOCALSTATEDIR "/var"
+#define PKGDATADIR DATADIR "/gromox"
+#if __OpenBSD__
+#	define PKGSTATEDIR LOCALSTATEDIR "/db/gromox"
+#	define PKGRUNDIR LOCALSTATEDIR "/run/gromox"
+#else
+#	define PKGSTATEDIR LOCALSTATEDIR "/lib/gromox"
+#	define PKGRUNDIR "/run/gromox"
+#endif
+#define FPMSOCKDIR "/run/php-fpm" /* varies even within Linux distros, so amply replace */
+#define PKGSTATEGATEWAYDIR PKGSTATEDIR "/gateway"
+#define PKGSTATEQUEUEDIR PKGSTATEDIR "/queue"
+#define PKGLOGDIR LOCALSTATEDIR "/log/gromox"
+/*
+ * LOCAL_DISK:
+ * - preferably not RAM (because used as temporary storage for fastcgi HTTP
+ *   request/response bodies, and the size of those are somewhat
+ *   user-influencable)
+ * - preferably low latency/preferably not a shared filesystem
+ */
+#define LOCAL_DISK_TMPDIR "/var/tmp/gromox"
+#define DFL_LOGOLINK "https://gromox.com/"

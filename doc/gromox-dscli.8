@@ -1,0 +1,74 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2022–2024 grommunio GmbH
+.TH gromox\-dscli 8 "" "Gromox" "Gromox admin reference"
+.SH Name
+gromox\-dscli \(em AutoDiscover command line utility
+.SH Synopsis
+\fBPASS=\fP\fIsecret\fP \fBgromox\-dscli\fP [\fB\-\-eas\fP] [\fB\-H\fP
+\fIhttps://host/path\fP] [\fB\-h\fP \fIhostonly\fP] [\fB\-e\fP \fIemailaddr\fP]
+[\fB\-v\fP]
+.SH Description
+This utility facilitates sending/receiving AutoDiscover request/responses
+to/from a server for testing.
+.SH Options
+.TP
+\fB\-H\fP \fIhttps://host/Autodiscover/Autodiscover.xml\fP
+The full URL for making the request. Useful when the request URI is
+non-standard. Use of \-H disables DNS SRV lookup.
+.br
+Default: \fIhttps://localhost/Autodiscover/Autodiscover.xml\fP
+.TP
+\fB\-e\fP \fIuser@domain.example\fP
+Username to send along in the request.
+.br
+Default: (none)
+.TP
+\fB\-h\fP \fIhost\fP
+The hostname to use for making the request. From this, the full URL is
+constructed as "https://\fIhost\fP/Autodiscover/Autodiscover.xml". Use of \-h
+disables DNS SRV lookup.
+.br
+Default: derive from \-e argument, otherwise (\-x) \fIlocalhost\fP
+.TP
+\fB\-u\fP \fIusername\fP
+Use a distinct username for authentication.
+.br
+Default: inherit from \-e option
+.TP
+\fB\-v\fP
+Be verbose. Log messages are emitted to stderr, the HTTP/XML request is emitted
+to stderr, and the HTTP/XML response (if any) is emitted to standard output.
+(These choices allow the output XML to be fed to e.g. xmllint for
+pretty-printing).
+.TP
+\fB\-x\fP \fI/o=1234578/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn=username\fP
+LegacyDN field to send along in the request.
+.br
+Default: (none)
+.TP
+\fB\-\-eas\fP
+Use the request schema from [MS-ASCMD].
+.TP
+\fB\-\-ac\fP
+Perform Mail Autoconf request instead of AutoDiscover. MA is used by e.g.
+(Mozilla) Thunderbird, (GNOME) Evolution, (KDE) KMail, (KDE) Kontact, K9 Mail,
+to name a few.
+.SH Examples
+Discover your store:
+.PP
+.RS 4
+PASS=letmein gromox\-dscli \-e user@domain.example
+.RE
+.PP
+Test public store discovery:
+.PP
+.RS 4
+PASS=letmein gromox\-dscli \-e public.folder.root@domain.example \-u user@domain.example
+.RE
+.SH Normative references
+.IP \(bu 4
+MS-OXDISCO: Autodiscover HTTP Service Protocol
+.IP \(bu 4
+MS-OXDSCLI: Autodiscover Publishing and Lookup Protocol
+.SH See also
+\fBgromox\fP(7)

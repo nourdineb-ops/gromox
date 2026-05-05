@@ -1,0 +1,44 @@
+#!/bin/sh -e
+topdir="${0%/*}"
+if [ "$topdir" = "$0" ]; then
+	topdir=.
+fi
+abstopdir=$(readlink -f "$topdir")
+if [ ! -e "${topdir}/configure" ]; then
+	cd "$topdir"
+	autoreconf -fi
+	cd -
+fi
+case "$(uname -s)" in
+OpenBSD)
+	set -x
+	"$topdir/configure" --sysconfdir=/etc --prefix=/usr/local --localstatedir=/var \
+		--enable-private-headers \
+		CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" "$@"
+	set +x
+	ncpus=$(sysctl hw.ncpuonline 2>/dev/zero | cut -b15-)
+	;;
+*)
+	echo -en '#include <libHX/string.h>\nint main(void) { HXmc_free(NULL); }' >conftest.c
+	libdir=""
+	if gcc -o conftest conftest.c $(pkg-config --cflags --libs libHX) >/dev/null 2>/dev/null; then
+		libdir=$(ldd conftest 2>/dev/null | perl -lne 'if(m{(\S+)/libc.so.}){print$1;exit}')
+		if [ -n "$libdir" ]; then
+			libdir="--libdir=$libdir"
+			echo "[33m""qconf: Adding $libdir""[0m"
+		fi
+	fi
+	set -x
+	"$topdir/configure" --sysconfdir=/etc --localstatedir=/var $libdir \
+		--enable-private-headers \
+		CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" "$@"
+	set +x
+	ncpus=$(nproc)
+	;;
+esac
+if [ "$ncpus" != "0" ]; then
+	ncpus=" -j$ncpus"
+else
+	ncpus=""
+fi
+echo "[32m""Run \`make$ncpus\` now. The just-built programs, e.g. \`./http\` can be put to use without \`make install\`.""[0m"

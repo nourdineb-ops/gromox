@@ -1,0 +1,68 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2025 grommunio GmbH
+.TH midb_agent 4gx "" "Gromox" "Gromox admin reference"
+.SH Name
+midb_agent \(em Client for midb(8gx)
+.SH Configuration directives
+The usual config file location is /etc/gromox/midb_agent.cfg.
+.TP
+\fBconnection_num\fP
+The number of connections to keep open towards every midb target.
+.br
+Default: \fI5\fP
+.TP
+\fBcontext_average_mem\fP
+Enables and sets the size of a memory pool (in object count; the actual size is
+256 bytes * context_num * context_average_mem). imap(8gx) and pop3(8gx) require
+this to be non-zero for full functionality.
+.br
+Default: \fI1024\fP
+.TP
+\fBmidb_agent_command_buffer_size\fP
+Certain midb commands can produce large results (such as P-SRHU with "ALL"). To
+avoid unbounded memory allocation, the result set is limited in size. If midb
+responds with a larger result, the midb connection is terminated and midb_agent
+returns an error to e.g. IMAP/POP. The default of 256K is good for a result set
+of around 24000 to 32000 messages.
+.br
+Default: \fI256K\fP
+.SH Multiserver map
+The SQL column \fBusers.homedir\fP specifies a home directory location in an
+abstract namespace. This abstract namespace is shared between all Gromox
+programs, and can be used to divide users into custom subsets and steer
+connections to different servers.
+.PP
+midb_list.txt specifies how to map from this namespace to midb servers.
+Each line in this file consists of 3 columns separated by whitespace:
+.IP \(bu 4
+Initial prefix to match a user's exmdb home directory on. The pattern should
+almost always end in a '/' character, otherwise a prefix of "/home" is able to
+match a userdir of "/home2/username" as well, which may be undesired.
+.IP \(bu 4
+The IPv6 address of the midb server to connect to for all requests involving
+this prefix. The address must conform to gromox(7) \(sc "Host addresses".
+.IP \(bu 4
+The port number.
+.PP
+In the absence of midb_list.txt, an implicit default entry is used:
+.RS
+.PP
+.nf
+/ ::1 5555
+.fi
+.RE
+.SH Files
+.IP \(bu 4
+\fIconfig_file_path\fP/\fIinstance\fP.cfg: configuration file for the instance
+of midb_agent. (Instance is usually \fBmidb_agent\fP, as there is not much point
+in loading midb_agent twice.)
+.IP \(bu 4
+\fIconfig_file_path\fP/midb_list.txt: midb multiserver map
+.PP
+\fIconfig_file_path\fP is determined by the configuration of the program that
+loaded the midb_agent component.
+.SH Signals
+Upon receipt of SIGHUP, configuration files are re-read, but only a few select
+directives can be changed this way, as many parts do not implement reload.
+.SH See also
+\fBgromox\fP(7)

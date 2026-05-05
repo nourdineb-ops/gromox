@@ -1,0 +1,74 @@
+#pragma once
+#include <cstdint>
+#include <ctime>
+#include <string>
+#include <vector>
+#include <vmime/generationContext.hpp>
+#include <vmime/mailbox.hpp>
+#include <vmime/message.hpp>
+#include <gromox/mapi_types.hpp>
+#define MIME_NAME_LEN 80U
+#define MIME_FIELD_LEN (64U * 1024)
+
+struct attachment_list;
+
+/**
+ * All fields are always UTF-8 for consistency.
+ */
+struct GX_EXPORT EMAIL_ADDR {
+	EMAIL_ADDR() = default;
+	EMAIL_ADDR(const char *x) { parse(x); }
+	EMAIL_ADDR(const vmime::mailbox &x) { set(x); }
+	void clear();
+	void set(const vmime::mailbox &);
+	void parse(const char *);
+	inline bool has_dispname() const { return *display_name != '\0'; }
+	inline bool has_addr() const { return *local_part != '\0' && *domain != '\0'; }
+	inline bool has_value() const { return has_dispname() || has_addr(); }
+
+	char display_name[256], local_part[ULCLPART_SIZE], domain[UDOM_SIZE], addr[UADDR_SIZE];
+};
+
+struct GX_EXPORT kvpair {
+	std::string name, value;
+};
+using MIME_FIELD = kvpair;
+
+struct GX_EXPORT ENCODE_STRING {
+    char encoding[32];
+    char charset[32];
+    char title[1024];
+};
+
+using GET_USERNAME = ec_error_t (*)(unsigned int, std::string &);
+
+struct MAIL;
+extern GX_EXPORT BOOL parse_uri(const char *uri_buff, char *parsed_uri);
+extern GX_EXPORT size_t parse_mime_field(const char *, size_t, MIME_FIELD *);
+extern GX_EXPORT void parse_field_value(const char *in_buff, long buff_len, char *value, long val_len, std::vector<kvpair> &);
+extern GX_EXPORT void parse_mime_encode_string(const char *in, long inlen, ENCODE_STRING *);
+extern GX_EXPORT int mutf7_to_utf8(const char *u7, size_t u7len, char *u8, size_t u8len);
+extern GX_EXPORT int utf8_to_mutf7(const char *u8, size_t u8len, char *u7, size_t u7len);
+extern GX_EXPORT int parse_imap_args(char *cmdline, int cmdlen, char **argv, int argmax);
+extern GX_EXPORT BOOL parse_rfc822_timestamp(const char *str_time, time_t *ptime);
+extern GX_EXPORT bool mime_string_to_utf8(std::string_view in, std::string &out);
+extern GX_EXPORT void enriched_to_html(const char *enriched_txt,
+	char *html, int max_len);
+extern GX_EXPORT int html_to_plain(std::string_view in, cpid_t, std::string &out);
+extern /*noexport*/ int html_to_plain_boring(std::string_view inbuf, std::string &outbuf);
+extern GX_EXPORT ec_error_t plain_to_html(const char *in, std::string &out);
+extern GX_EXPORT ec_error_t html_to_rtf(std::string_view in, cpid_t, std::string &out);
+extern GX_EXPORT ec_error_t rtf_to_html(std::string_view in, const char *charset, std::string &out, attachment_list *);
+extern GX_EXPORT ec_error_t rtfcp_uncompress(std::string_view in, std::string &out);
+extern GX_EXPORT ec_error_t rtfcp_encode(std::string_view in, std::string &out);
+
+namespace gromox {
+
+extern GX_EXPORT ec_error_t cu_rcpt_to_list(const TPROPVAL_ARRAY &, const char *org, std::vector<std::string> &outlist, GET_USERNAME, bool resend);
+extern GX_EXPORT ec_error_t cu_send_mail(const MAIL &, const char *smtp_url, const char *sender, const std::vector<std::string> &rcpt);
+extern GX_EXPORT ec_error_t cu_send_vmail(vmime::shared_ptr<vmime::message>, const char *smtp_url, const char *sender, const std::vector<std::string> &rcpt);
+extern GX_EXPORT vmime::parsingContext vmail_default_parsectx();
+extern GX_EXPORT vmime::generationContext vmail_default_genctx();
+extern GX_EXPORT std::string vmail_to_string(const vmime::message &);
+
+}

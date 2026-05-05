@@ -1,0 +1,491 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2022–2024 grommunio GmbH
+.TH gromox\-mbop 8 "" "Gromox" "Gromox admin reference"
+.SH Name
+gromox\-mbop \(em Mailbox operations utility
+.SH Synopsis
+\fBgromox\-mbop\fP [\fB\-d\fP \fImbox\fP|\fB\-u\fP
+[\fIrecipient\fP]\fB@domain.example\fP] \fIcommand\fP [command-args...]
+.SH Summary
+gromox\-mbop can be used to perform various administrative tasks on mailboxes.
+Technically, mbop contacts the respective home server(s) and instructs the
+server to perform the requested action. Unlike tools such as mbck,
+mkprivate/mkpublic/mkmidb, mbop itself does not do any direct filesystem access
+on the mailbox.
+.SH Global options
+.TP
+\fB\-c\fP
+Continuous operation mode. If a command in a series (e.g. with foreach.*)
+fails, do not stop.
+.TP
+\fB\-d\fP \fI/var/lib/gromox/user/1/2\fP
+Lookup the mailbox parameters from the associated filesystem location.
+.TP
+\fB\-u\fP [\fIuser\fP]\fB@example.com\fP
+Lookup the mailbox parameters by the associated username. (To access a public
+store of a domain, leave out the local part, i.e. use
+\fB@\fP\fIexample.com\fP.)
+.TP
+\fB\-v\fP
+Verbose mode.
+.SH Commands
+.IP \(bu 4
+\fB(\fP command1 c1args \fB) (\fP command2 c2args \fB)\fP: command
+chaining
+.IP \(bu 4
+cgkreset: reset synchronization state (PR_CHANGE_KEY, PR_PREDECESSOR_LIST)
+.IP \(bu 4
+clear\-photo: delete user picture
+.IP \(bu 4
+clear\-profile: delete user's PHP-MAPI profile
+.IP \(bu 4
+clear\-rwz: delete IPM.RuleOrganizer FAI messages from the inbox
+.IP \(bu 4
+delmsg: issue "delete_message" RPCs for a mailbox
+.IP \(bu 4
+echo\-maildir: return maildir (for use with foreach.here.*)
+.IP \(bu 4
+echo\-username: return username (for use with foreach.*)
+.IP \(bu 4
+emptyfld: remove objects from folders
+.IP \(bu 4
+foreach.*: iterate over security objects
+.IP \(bu 4
+freeze: halt all operations on a mailbox
+.IP \(bu 4
+get\-freebusy: test FB schedule lookups
+.IP \(bu 4
+get\-photo: retrieve user image from store and print to stdout
+.IP \(bu 4
+get\-websettings, get\-websettings\-persistent, get\-websettings\-recipients:
+retrieve settings for grommunio-web
+.IP \(bu 4
+ping: cause a mailbox's sqlite files to be opened
+.IP \(bu 4
+purge\-datafiles: remove orphaned attachments/content files from disk
+.IP \(bu 4
+purge\-softdelete: remove soft-deleted items from a folder
+.IP \(bu 4
+recalc\-sizes: recalculate store size
+.IP \(bu 4
+set\-locale: reset UI language and special folders' names
+.IP \(bu 4
+set\-photo: read user image from stdin and save to store
+.IP \(bu 4
+set\-websettings, set\-websettings\-persistent, set\-websettings\-recipients:
+read new grommunio-web settings from stdin and save to store
+.IP \(bu 4
+sync\-midb: trigger a midb synchronization run
+.IP \(bu 4
+thaw: unfreeze a mailbox
+.IP \(bu 4
+unload: issue the "unload_store" RPC for a mailbox
+.IP \(bu 4
+vacuum: issue the "vacuum" RPC for a mailbox
+.IP \(bu 4
+zaddrxlat: replace all "ZARAFA" type addresses in the mailbox's contents
+.SH Further documentation
+.IP \(bu 4
+SQLite recovery: https://docs.grommunio.com/kb/sqlite.html
+.SH Command chaining
+\fB(\fP \fIsubcommand1 sub1args\fP... \fB)\fP...
+.PP
+It is possible to run multiple mbop commands in sequence for a user. For the
+option parser to recognize when a command ends and the next one starts, each
+subcommand invocation shall be wrapped in \fB(\fP and \fB)\fP. This becomes
+even more handy in conjunction with the foreach.* pseudocommand.
+.PP
+Subcommands reading data from standard input (e.g. set\-photo) cannot be
+realiably used with chaining, because stdin would be fully consumed the first
+time around and (...) does not cache the input for any subcommands.
+.SS Examples
+Run two commands for a user: gromox\-mbop \-u a@b.de \\( purge\-softdelete -r /
+\\) \\( purge\-datafiles \\)
+.SH cgkreset
+cgkreset resets Change Numbers on all folder and message objects, PR_CHANGE_KEY
+and PR_PREDECESSOR_LIST values. The use cases for cgkreset are:
+.IP \(bu 4
+when the mailbox has CN corruption and Incremental Change Synchronization (by
+e.g. Outlook or grommunio-sync) is hampered (e.g. message flags/color updates
+not transferred)
+.IP \(bu 4
+when the mailbox has CN corruption and gromox-http/emsmdb has thrown the error
+"INSERT INTO messages ... UNIQUE constraint failed: messages.change_number"
+.PP
+After execution, .ost files referencing the reset mailbox should be deleted.
+.SH clear\-photo
+The clear\-photo command will delete the user picture. Note that, when there is
+no mailbox-level profile picture set, Gromox server processes may serve an
+image from another source, e.g. LDAP.
+.SH clear\-profile
+Similar to MSMAPI, PHP-MAPI keeps a MAPI profile which contains a store list
+and also the settings for grommunio-web. The clear\-profile command will delete
+the copy of this data stored in exmdb. Note that zcore(8) may still hold a copy
+of the MAPI profile in memory and could write that back to exmdb, nullifying
+the effect of the clear\-profile command. Also, if the store list is absent,
+a new one will implicitly be created when PHP-MAPI/zcore is used.
+.SH clear\-rwz
+Deletes IPM.RuleOrganizer FAI messages from the inbox.
+.SH delmsg
+.SS Synopsis
+\fBdelmsg \-f\fP \fIfolder_spec\fP
+[\fImsgid\fP...]
+.SS Description
+This command hard-deletes messages from a store, including issuing proper
+PR_CHANGE_KEY metadata updates for the sake of Cached Mode clients.
+.PP
+The message IDs taken as arguments on the command-line should be
+of the GC-value form, i.e. as they appear in the the SQLite database.
+(For details about GCV, see glossary.rst in the source distribution.)
+.SS Subcommand options
+.TP
+\fB-f\fP \fIfolder_spec\fP
+The folder from which to delete the messages. See section "Folder
+specification" below for syntax details of \fIfolder_spec\fP. (If a msgid is
+specified which is not located in the particular folder, that message will not
+be deleted.)
+.TP
+\fB\-\-soft\fP
+Perform a soft deletion.
+.SH emptyfld
+.SS Synopsis
+\fBemptyfld\fP [\fB\-MRa\fP] [\fB\-t\fP \fIage\fP] [\fB\-\-soft\fP]
+\fIfolder_spec\fP...
+.SS Description
+This command deletes objects from one or more folders. emptyfld is normally a
+one-shot server-side operation. The use of \-R,\-t is not covered by the
+existing network protocols, which means that, if either of these options is
+used, the mbop client program performs the desired recursion and/or timestamp
+matching locally. This incurs multiple round trips to the server and so takes a
+bit more time than a "trivial" emptyfld call.
+.PP
+Just to spell it out again explicitly, emptyfld can be in one of three modes:
+.IP \(bu 4
+server-assisted operations:
+.RS 4
+.IP \(bu 4
+clear contents and/or FAI, no time conditions, no recursion
+.IP \(bu 4
+clear contents and/or FAI, no time conditions, nuke subfolders (recursion
+barred)
+.RE
+.IP \(bu 4
+client-side traversal:
+.RS 4
+.IP \(bu 4
+clear contents and/or FAI, with or without evaluating timestamps, with or
+without recursion into subfolders, with or without subfolder deletion if empty
+.RE
+.SS Subcommand options
+.TP
+\fB\-M\fP
+Exempt normal messages from deletion.
+.TP
+\fB\-R\fP
+Recurse into subfolders.
+.TP
+\fB\-a\fP
+Select associated messages (FAI) for deletion.
+.TP
+\fB\-t\fP \fItimespec\fP
+Limit deletion to messages which have a last modification timestamp older than
+\fItimespec\fP. See gromox(7), section "Duration specification" for timespec's
+syntax.
+.TP
+\fB\-\-delempty\fP
+If, after message deletion, any subfolder is empty, delete it.
+.TP
+\fB\-\-nuke\-folders\fP
+Unconditionally delete subfolders outright. For obvious reasons, deleting
+subfolders disables recursion via \-R (because when they are deleted,
+there is nothing left to recurse into).
+.TP
+\fB\-\-soft\fP
+Switch from hard deletion to soft deletion.
+.SS Soft deletion notes
+Soft deletion sets the soft-delete flag (also called "hidden" in Exchange) on
+messages and/or folders. Soft-deleted objects can be restored/unhidden by the
+user. Users are technically empowered to perform hard deletions as well, but
+most mail clients do not offer a user control (e.g. checkbox widget) for it,
+requiring the use of diagnostic utilities like MFCMAPI or gromox\-mbop instead.
+.PP
+When a folder's soft-delete flag changes, the messages and subfolders within
+are left untouched; their soft-delete flag does not change. In fact, this
+behaves exactly like setting a directory in the file system to hidden.
+.SS Examples
+.IP \(bu 4
+Clear one folder's contents like Outlook/grommunio-web:
+gromox\-mbop \-u a@b.de emptyfld \-\-soft DRAFTS
+.IP \(bu 4
+Outlook/grommunio-web behave differently when clearing trash! The equivalent
+mbop command is:
+gromox\-mbop \-u a@b.de emptyfld \-\-soft \-\-nuke\-folders DELETED
+.IP \(bu 4
+Deletion of objects in trash only if untouched for a while:
+gromox\-mbop \-u abc@example.com emptyfld \-Rt 1week \-\-soft DELETED
+.SH foreach.*
+.SS Synopsis
+\fBforeach.\fP\fIfilter\fP[\fB\.\fP\fIfilter\fP]* [\fB\-j\fP \fIjobs\fP]
+\fIcommand\fP [command-args...]
+.SS Description
+foreach.* is a pseudoaction for running another subcommands that gromox-mbop
+offers (e.g. ping, unload, purge\-softdelete, etc.) for a number of users.
+Subcommands reading data from standard input (e.g. set\-photo) cannot be
+realiably used with foreach, because stdin would be fully consumed the first
+time around and foreach does not cache the input for any subcommands.
+.SS Filters
+.IP \(bu 4
+secobj: limit to objects that can be used in ACLs
+.IP \(bu 4
+user: regular users
+.IP \(bu 4
+dl: distribution lists (groups)
+.IP \(bu 4
+sharedmb: shared mailboxes
+.IP \(bu 4
+room: room objects
+.IP \(bu 4
+equipment: equipment objects
+.IP \(bu 4
+contact: GAB contact objects
+.IP \(bu 4
+active: active entities
+.IP \(bu 4
+susp: entities marked as "suspended"
+.IP \(bu 4
+deleted: entities marked as "deleted"
+.IP \(bu 4
+mb: entity has a mailbox directory defined
+.IP \(bu 4
+here: entity has current host as homeserver (compares `hostname \-\-fqdn` where
+mbop is run with the SQL.servers.hostname column)
+.PP
+There is no "all" filter. Security objects and Contacts are so vastly different
+that it just does not make sense to operate on them in the same run.
+.SS Options
+.TP
+\fB\-j\fP \fIjobs\fP
+Maximum parallel execution factor. (Experimental.) 0 means autosizing. Only
+ping/vacuum/unload support this, and the option is otherwise ignored. Use
+external tools like parallel(1) or make(1) for guaranteed parallelization.
+.br
+Default: \fI1\fP
+.SS Examples
+.IP \(bu 4
+Hard-delete all objects which are currently softdeleted: gromox\-mbop
+foreach.mb.here purge\-softdelete -r /
+.SH get\-freebusy
+.SS Synopsis
+\fBget\-freebusy\fP [\fB\-a\fP \fIstart_time\fP] [\fB\-b\fP \fIend_time\fP]
+[\fB\-x\fP \fIusername\fP]
+.SS Description
+Runs the get_freebusy routine on the mailbox specified by the global \-d/\-u
+option(s) [or the mailbox currently in scope when using foreach.*], and asks
+for free/busy status within the given time period.
+.SS Options
+.TP
+\fB\-a\fP {\fIyyyy-mm-dd\fP\fBT\fP\fIhh:mm:ss\fP[\fBZ\fP|\fB+\fP\fIhhmm\fP|\fB\-\fP\fIhhmm\fP]|\fIunixtime\fP}
+Limit returned events to occuring on or after this timestamp.
+Can either be a Unixtime or a ISO 8601 timestamp.
+.TP
+\fB\-b\fP {\fIyyyy-mm-dd\fP\fBT\fP\fIhh:mm:ss\fP[\fB+\fP\fIhhmm\fP|\fB\-\fP\fIhhmm\fP]|\fIunixtime\fP}
+Limit returned events to ocurring before this timestamp.
+.TP
+\fB\-x\fP \fIusername\fP
+Evaluate access control lists as this identity.
+If the \-x option is omitted, ACL checks are omitted.
+.SH freeze
+.SS Synopsis
+\fBfreeze\fP [\fB\-\-no\-wait\fP]
+.SS Description
+Tell the Information Store to halt all new operations on the mailbox.
+Outstanding operations that are currently in processing are allowed to
+complete. New requests for the mailbox will be rejected. Special requests like
+(mbop's) \fIunload\fP or \fIthaw\fP are nevertheless allowed in frozen state,
+for obvious reasons.
+.SS Options
+.TP
+\fB\-\-no\-wait\fP
+Do not wait for outstanding operations to complete.
+.SH get\-photo
+.SS Synopsis
+\fBget\-photo >\fP\fIsomefile\fP
+.SS Description
+Reads the user photo from the store and dumps it to stdout. If stdout is a
+terminal, no output is shown, in which case, if stderr is (also) a terminal,
+a summary will be shown there.
+.SH get\-websettings
+.SS Synopsis
+\fBget\-websettings >\fP\fIfile.json\fP
+.br
+\fBget\-websettings\-persistent >\fP\fIfile.json\fP
+.br
+\fBget\-websettings\-recipients >\fP\fIautocomplete.json\fP
+.SS Description
+Reads various grommunio-web settings from the store and dumps it to stdout.
+.SH ping
+Causes the respective mailbox to be opened by the server. (Any request to the
+information storage server causes the respective mailbox to be opened; and ping
+is technically just a no-op request type.)
+.SH sync\-midb
+.SS Synopsis
+\fBsync-midb\fP [\fB\-f\fP \fIfolder_spec\fP]
+.SS Description
+Sends a request to midb for opening the mailbox and updating the midb-specific
+folder indices, as well as potentially building RFC5322 representations for
+newly-appeared messages. (Once the mailbox is open in midb, it uses
+asynchronous notifications to stay up to date.)
+.SS Options
+.TP
+\fB\-f\fP \fIfolder_spec\fP
+Forcibly rerun the sync routine for a single specific folder. See section
+"Folder specification". In addition, the special keyword "all" is recognized.
+.SH purge\-datafiles
+The "purge\-datafiles" RPC makes exmdb_provider remove attachment and content
+files from disk that are no longer referenced by any message.
+.SH purge\-softdelete
+.SS Synopsis
+\fBpurge-softdelete\fP [\fB\-r\fP] [\fB\-t\fP \fItimespec\fP]
+\fIfolder_spec\fP...
+.SS Description
+This command hard-deletes all messages from a folder which are marked as
+soft-deleted. (The entire mailbox can be processed by specifying the root
+folder plus the \-r option.)
+.SS Subcommand options
+.TP
+\fB\-r\fP
+Recurse into subfolders.
+.TP
+\fB\-t\fP \fItimespec\fP
+Specifies the minimum time to the last modification that soft-deleted messages
+must have before they are hard-deleted. See gromox(7), section "Duration
+specification" for timespec's syntax.
+.br
+Default: \fI0\fP (immediate deletion)
+.SS Examples
+.IP \(bu 4
+To process an entire mailbox and wipe everything older than a few days:
+gromox\-mbop \-u abc@example.com purge\-softdelete \-r / \-t 10d
+.SH recalc\-sizes
+Recalculates the store size.
+.SH set\-locale
+.SS Synopsis
+\fBset\-locale\fP [\fB\-Tv\fP] \-l\fP \fIid\fP
+.SS Description
+First, the set\-locale operation changes the "preferred language" setting for
+the user account. This affects the display of user interfaces like
+grommunio-web, and also affects the folder language selection when a mailbox is
+truncated/re-created with gromox\-mkprivate(8).
+.PP
+Second, provided Gromox has default folder name translations for the desired
+locale, set\-locale also resets the display names of the mailbox's built-in
+folders.
+.SS Options
+.TP
+\fB\-T\fP
+Run a trivial performance test against exmdb by repeatedly setting the folder
+names.
+.TP
+\fB\-l\fP \fId\fP
+A locale identifier in the form of \fIlanguage\fP\fB_\fP[\fIterritory\fP],
+where language is a ISO 639-1 code and territory is a ISO 3166-1 Alpha 2 code,
+e.g. ja_JP, pt_BR, pt_PT. This is like the well-known XPG/POSIX locale
+identifier syntax
+<https://www.gnu.org/software/libc/manual/html_node/Locale-Names.html>, but no
+Codeset and no Modifier should be used in Gromox.
+.TP
+\fB\-v\fP
+Verbose mode. (Same as global \-v.)
+.SS Examples
+.IP \(bu 4
+gromox\-mbop \-u abc@example.com set\-locale \-l ja_JP
+.SH set\-photo
+.SS Synopsis
+\fBset\-photo <\fP\fIsomefile\fP
+.SS Description
+Reads a new user photo from standard input and writes it to the store.
+.SH set\-websettings
+.SS Synopsis
+\fBset\-websettings <\fP\fIfile.json\fP
+.br
+\fBset\-websettings\-persistent <\fP\fIfile.json\fP
+.br
+\fBset\-websettings\-recipients <\fP\fIautocomplete.json\fP
+.SS Description
+Reads new grommunio-web settings from standard input and writes it to the
+store.
+.SH unload
+Normally, exmdb_provider(4gx) keeps stores open for up to
+exmdb_provider.cfg:cache_interval. The "unload_store" RPC to
+exmdb_provider(4gx) causes the sqlite database (in
+/var/lib/gromox/.../exmdb/exchange.sqlite3) to be closed. Any subsequent RPC
+may reopen it, though. The unload RPC is useful after a mailbox was deleted
+and/or reinitialized with grommunio-admin-api or tools like
+gromox-mkprivate(8)/gromox-mkpublic(8). [zcore also has store state in memory.
+This would also need to be purged \(em but there is no RPC for such action at
+this time.] unload will fail to succeed if there is still a client connected to
+the mailbox via a notification channel.
+.SH vacuum
+Issue the SQLite ".vacuum" command on the user's exchange.sqlite3 file in an
+attempt to reclaim unused disk space and shrink it. This operation can
+potentially run for quite some time, during which the mailbox is inaccessible.
+.SH zaddrxlat
+Scans messages in the given folders and replaces PR_ADDRTYPE="ZARAFA" and
+related properties by normal SMTP addresses. See gromox\-kdb2mt(8) section
+"ZARAFA Address Type" for some details. The use case for zaddrxlat is for
+fixing up addresses after the fact, i.e. when the administrator forgot to
+employ a user map at the time of running kdb2mt. zaddrxlat does not change
+ACLs.
+.SS Synopsis
+\fBzaddrxlat \-m\fP \fIfile\fP [\fB\-r\fP] \fIfolder_spec\fP[...]
+.SS Options
+.TP
+\fB\-m\fP \fIfile\fP
+User map to utilize for translation. See kdb\-uidextract(8) for a format
+description.
+.TP
+\fB\-r\fP
+Process folders recursively.
+.SH Example
+.PP
+zaddrxlat -m u.map -r "IPM_SUBTREE/Import of blah @2025-12-26"
+.SH Folder specification
+\fIfolder_spec\fP must conform to one of three forms. Either:
+.IP \(bu 4
+a numeric identifer (e.g. 13, 0xd)
+.IP \(bu 4
+a folder path starting with a slash, optionally followed by a slash-separated
+sequence of subordinate folder names
+.IP \(bu 4
+a folder path starting with a fixed symbolic name, optionally followed by a
+slash-separated sequence of subordinate folder names
+.PP
+The backslash may be used as a hierarchy separator instead; in any case, the
+chosen separator must be used consistently in the entire path.
+.PP
+The recognized strings are: CALENDAR, COMMON_VIEWS, CONFLICTS, CONTACTS,
+DEFERRED_ACTION, DELETED (TRASH, WASTEBASKET), DRAFT, FINDER, INBOX,
+IPM_SUBTREE, JOURNAL, JUNK, LOCAL_FAILURES, NOTES, OUTBOX, SENT,
+SERVER_FAILURES, SHORTCUTS, SYNC_ISSUES, TASKS, VIEWS.
+.PP
+The purpose of these names is for referencing a built-in folder irrespective of
+its assigned name, which is dependent upon translation settings. The symbolic
+names can be used with private stores only; there are no names defined for
+public folder contents at this time. There is also no parsing support for
+slashes in folder names. The slash character is always treated as a hierarchy
+separator.
+.SS Examples
+.IP \(bu 4
+Using the MAPI root: /Top of Information Store/Sent Items/2022
+.IP \(bu 4
+Using a symbolic name: IPM_SUBTREE/Sent Items/2022
+.IP \(bu 4
+Using a symbolic name: SENT/2022
+.IP \(bu 4
+Referencing a folder with a slash can be done by using backslash as the
+hierarchy separator: SENT\\Winter break 2022/2023
+.PP
+The MAPI root is not visible in most clients. MUAs like Outlook and
+grommunio-web show hierarchy starting at IPM_SUBTREE only.
+.SH See also
+\fBgromox\fP(7)

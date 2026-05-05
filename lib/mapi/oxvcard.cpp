@@ -1,0 +1,1169 @@
+// SPDX-License-Identifier: GPL-2.0-only WITH linking exception
+// SPDX-FileCopyrightText: 2020–2026 grommunio GmbH
+// This file is part of Gromox.
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <string>
+#include <utility>
+#include <vector>
+#include <gromox/defs.h>
+#include <gromox/fileio.h>
+#include <gromox/mapidefs.h>
+#include <gromox/oxcmail.hpp>
+#include <gromox/rop_util.hpp>
+#include <gromox/util.hpp>
+#include <gromox/vcard.hpp>
+
+using namespace std::string_literals;
+using namespace gromox;
+
+namespace {
+
+struct unrecog {
+	unrecog(const vcard_line &l) :
+		m_what("Line " + std::to_string(l.m_lnum)) {}
+	unrecog(const vcard_line &l, const vcard_param &p) :
+		m_what("Line " + std::to_string(l.m_lnum) + " Param {" + p.name() + "}") {}
+	unrecog(const vcard_line &l, const vcard_value &v) :
+		m_what("Line " + std::to_string(l.m_lnum) + " Value {}") {}
+	const char *what() const noexcept { return m_what.c_str(); }
+	std::string m_what;
+};
+
+}
+
+namespace gromox {
+unsigned int g_oxvcard_pedantic;
+}
+
+static constexpr proptag_t g_n_proptags[] = 
+	{PR_SURNAME, PR_GIVEN_NAME, PR_MIDDLE_NAME,
+	PR_DISPLAY_NAME_PREFIX, PR_GENERATION};
+static constexpr proptag_t g_abentry_proptags[] = {
+	PR_DISPLAY_NAME, PR_SURNAME, PR_GIVEN_NAME, PR_MIDDLE_NAME,
+	PR_DISPLAY_NAME_PREFIX, PR_GENERATION, PR_NICKNAME, PR_TITLE,
+	PR_COMPANY_NAME, PR_DEPARTMENT_NAME, PR_COMMENT,
+	PR_SMTP_ADDRESS, PR_ACCOUNT, PR_EMAIL_ADDRESS,
+	PR_EMS_AB_PROXY_ADDRESSES,
+	PR_PRIMARY_TELEPHONE_NUMBER, PR_HOME_TELEPHONE_NUMBER,
+	PR_HOME2_TELEPHONE_NUMBER, PR_OTHER_TELEPHONE_NUMBER,
+	PR_BUSINESS_TELEPHONE_NUMBER, PR_BUSINESS2_TELEPHONE_NUMBER,
+	PR_MOBILE_TELEPHONE_NUMBER, PR_PAGER_TELEPHONE_NUMBER,
+	PR_CAR_TELEPHONE_NUMBER, PR_ISDN_NUMBER, PR_HOME_FAX_NUMBER,
+	PR_BUSINESS_FAX_NUMBER, PR_ASSISTANT_TELEPHONE_NUMBER,
+	PR_CALLBACK_TELEPHONE_NUMBER, PR_COMPANY_MAIN_PHONE_NUMBER,
+	PR_RADIO_TELEPHONE_NUMBER, PR_TTYTDD_PHONE_NUMBER,
+	PR_HOME_ADDRESS_POST_OFFICE_BOX, PR_HOME_ADDRESS_STREET,
+	PR_HOME_ADDRESS_CITY, PR_HOME_ADDRESS_STATE_OR_PROVINCE,
+	PR_HOME_ADDRESS_POSTAL_CODE, PR_HOME_ADDRESS_COUNTRY,
+};
+/*
+ * On vcf2mt, oxvcard_import produces named properties starting at 0x8000, and
+ * at the end of the function, calls get_propids and remaps to the caller's
+ * namespace.
+ *
+ * On exm2mt, oxvcard_export calls get_propids at the start, filling
+ * oxvcard_get_propids::bf. The PROP_ID parts of all our raw numbers
+ * (g_workaddr_proptags etc.) are then actually indices into the
+ * oxvcard_get_propids::bf array.
+ */
+static constexpr proptag_t g_workaddr_proptags[] =
+	{0x8000001F, 0x8001001F, 0x8002001F, 0x8003001F, 0x8004001F, 0x8005001F};
+static constexpr proptag_t g_homeaddr_proptags[] =
+	{PR_HOME_ADDRESS_POST_OFFICE_BOX, PR_HOME_ADDRESS_STREET,
+	PR_HOME_ADDRESS_CITY, PR_HOME_ADDRESS_STATE_OR_PROVINCE,
+	PR_HOME_ADDRESS_POSTAL_CODE, PR_HOME_ADDRESS_COUNTRY};
+static constexpr proptag_t g_otheraddr_proptags[] =
+	{PR_OTHER_ADDRESS_POST_OFFICE_BOX, PR_OTHER_ADDRESS_STREET,
+	PR_OTHER_ADDRESS_CITY, PR_OTHER_ADDRESS_STATE_OR_PROVINCE,
+	PR_OTHER_ADDRESS_POSTAL_CODE, PR_OTHER_ADDRESS_COUNTRY};
+static_assert(std::size(g_workaddr_proptags) == std::size(g_homeaddr_proptags));
+static_assert(std::size(g_workaddr_proptags) == std::size(g_otheraddr_proptags));
+static constexpr proptag_t g_email_proptags[] =
+	{0x8006001F, 0x8007001F, 0x8008001F};
+static constexpr proptag_t g_addrtype_proptags[] =
+	{0x8012001F, 0x8013001F, 0x8014001F};
+static constexpr proptag_t g_im_proptag = 0x8009001F;
+static constexpr proptag_t g_categories_proptag = 0x800A101F;
+static constexpr proptag_t g_bcd_proptag = 0x800B0102;
+static constexpr proptag_t g_ufld_proptags[] = 
+	{0x800C001F, 0x800D001F, 0x800E001F, 0x800F001F};
+static constexpr proptag_t g_fbl_proptag = 0x8010001F;
+static constexpr proptag_t g_vcarduid_proptag = 0x8011001F;
+static constexpr proptag_t g_hasphoto_proptag = 0x8015000b;
+
+static BOOL oxvcard_check_compatible(const vcard *pvcard)
+{
+	BOOL b_version;
+	
+	b_version = FALSE;
+	for (const auto &line : pvcard->m_lines) {
+		auto pvline = &line;
+		if (strcasecmp(pvline->name(), "VERSION") != 0)
+			continue;
+		auto pstring = pvline->get_first_subval();
+		if (pstring == nullptr)
+			return FALSE;
+		if (strcmp(pstring, "3.0") != 0 &&
+		    strcmp(pstring, "4.0") != 0)
+			return FALSE;
+		b_version = TRUE;
+	}
+	return b_version ? TRUE : FALSE;
+}
+
+static BOOL oxvcard_get_propids(PROPID_ARRAY *ppropids,
+	GET_PROPIDS get_propids)
+{
+	const PROPERTY_NAME bf[22] = {
+	/* 0x0 */
+		{MNID_ID, PSETID_Address, PidLidWorkAddressPostOfficeBox},
+		{MNID_ID, PSETID_Address, PidLidWorkAddressStreet},
+		{MNID_ID, PSETID_Address, PidLidWorkAddressCity},
+		{MNID_ID, PSETID_Address, PidLidWorkAddressState},
+		{MNID_ID, PSETID_Address, PidLidWorkAddressPostalCode},
+		{MNID_ID, PSETID_Address, PidLidWorkAddressCountry},
+		{MNID_ID, PSETID_Address, PidLidEmail1EmailAddress},
+		{MNID_ID, PSETID_Address, PidLidEmail2EmailAddress},
+	/* 0x8 */
+		{MNID_ID, PSETID_Address, PidLidEmail3EmailAddress},
+		{MNID_ID, PSETID_Address, PidLidInstantMessagingAddress},
+		{MNID_ID, PS_PUBLIC_STRINGS, PidLidCategories},
+		{MNID_ID, PSETID_Address, PidLidBusinessCardDisplayDefinition},
+		{MNID_ID, PSETID_Address, PidLidContactUserField1},
+		{MNID_ID, PSETID_Address, PidLidContactUserField2},
+		{MNID_ID, PSETID_Address, PidLidContactUserField3},
+		{MNID_ID, PSETID_Address, PidLidContactUserField4},
+	/* 0x10 */
+		{MNID_ID, PSETID_Address, PidLidFreeBusyLocation},
+		{MNID_STRING, PSETID_Gromox, 0, deconst("vcarduid")},
+		{MNID_ID, PSETID_Address, PidLidEmail1AddressType},
+		{MNID_ID, PSETID_Address, PidLidEmail2AddressType},
+		{MNID_ID, PSETID_Address, PidLidEmail3AddressType},
+		{MNID_ID, PSETID_Address, PidLidHasPicture},
+	};
+	const PROPNAME_ARRAY propnames  {std::size(bf), deconst(bf)};
+	return get_propids(&propnames, ppropids);
+}
+
+static bool is_photo(const char *t)
+{
+	return strcasecmp(t, "jpeg") == 0 || strcasecmp(t, "jpg") == 0 ||
+	       strcasecmp(t, "png") == 0 || strcasecmp(t, "gif") == 0 ||
+	       strcasecmp(t, "bmp") == 0;
+}
+
+static bool is_fax_param(const vcard_param &p)
+{
+	if (strcasecmp(p.name(), "type") == 0 && p.m_paramvals.size() > 0 &&
+	    strcasecmp(p.m_paramvals[0].c_str(), "fax") == 0)
+		return true;
+	return strcasecmp(p.name(), "fax") == 0;
+}
+
+static inline bool has_content(const char *value)
+{
+	return value != nullptr && *value != '\0';
+}
+
+static bool oxvcard_copy_prop(TPROPVAL_ARRAY &dst, const TPROPVAL_ARRAY &src,
+    proptag_t tag)
+{
+	auto value = src.getval(tag);
+	return value == nullptr || dst.set(tag, value) == ecSuccess;
+}
+
+static bool oxvcard_abentry_to_contact(const TPROPVAL_ARRAY &props,
+    bool is_group, GET_PROPIDS get_propids, MESSAGE_CONTENT &msg)
+{
+	PROPID_ARRAY propids{};
+	auto remap_tag = [&](proptag_t t) -> proptag_t {
+		/* Given one of the source pseudo proptags like 0x8000001F, emit the actual proptag */
+		return PROP_TAG(PROP_TYPE(t), propids[PROP_ID(t) - 0x8000]);
+	};
+
+	if (!oxvcard_get_propids(&propids, get_propids))
+		return false;
+	if (msg.proplist.set(PR_MESSAGE_CLASS,
+	    is_group ? "IPM.DistList" : "IPM.Contact") != ecSuccess)
+		return false;
+
+	for (auto tag : g_abentry_proptags) {
+		switch (tag) {
+		case PR_SMTP_ADDRESS:
+		case PR_ACCOUNT:
+		case PR_EMAIL_ADDRESS:
+		case PR_EMS_AB_PROXY_ADDRESSES:
+			continue;
+		default:
+			if (!oxvcard_copy_prop(msg.proplist, props, tag))
+				return false;
+		}
+	}
+
+	auto display_name = props.get<const char>(PR_DISPLAY_NAME);
+	if (!has_content(display_name))
+		display_name = props.get<const char>(PR_SMTP_ADDRESS);
+	if (!has_content(display_name))
+		display_name = props.get<const char>(PR_ACCOUNT);
+	if (!has_content(display_name))
+		display_name = props.get<const char>(PR_EMAIL_ADDRESS);
+	if (has_content(display_name) &&
+	    (msg.proplist.set(PR_DISPLAY_NAME, display_name) != ecSuccess ||
+	     msg.proplist.set(PR_NORMALIZED_SUBJECT, display_name) != ecSuccess ||
+	     msg.proplist.set(PR_CONVERSATION_TOPIC, display_name) != ecSuccess))
+		return false;
+
+	std::vector<std::string> emails;
+	auto add_email = [&](const char *value) {
+		if (!has_content(value) || emails.size() >= std::size(g_email_proptags))
+			return;
+		for (const auto &existing : emails)
+			if (strcasecmp(existing.c_str(), value) == 0)
+				return;
+		emails.emplace_back(value);
+	};
+	add_email(props.get<const char>(PR_SMTP_ADDRESS));
+	if (emails.empty())
+		add_email(props.get<const char>(PR_ACCOUNT));
+	if (emails.empty()) {
+		auto email = props.get<const char>(PR_EMAIL_ADDRESS);
+		if (has_content(email) && strchr(email, '@') != nullptr)
+			add_email(email);
+	}
+	auto aliases = props.get<const STRING_ARRAY>(PR_EMS_AB_PROXY_ADDRESSES);
+	if (aliases != nullptr) {
+		for (size_t i = 0; i < aliases->count; ++i) {
+			auto value = aliases->ppstr[i];
+			if (!has_content(value) || strncasecmp(value, "SMTP:", 5) != 0)
+				continue;
+			add_email(value + 5);
+		}
+	}
+	for (size_t i = 0; i < emails.size(); ++i) {
+		if (msg.proplist.set(remap_tag(g_email_proptags[i]), emails[i].c_str()) != ecSuccess ||
+		    msg.proplist.set(remap_tag(g_addrtype_proptags[i]), "SMTP") != ecSuccess)
+			return false;
+	}
+	return true;
+}
+
+static void add_person(vcard &card, const MESSAGE_CONTENT &msg,
+    proptag_t proptag, const char *line_key)
+{
+	auto value = msg.proplist.get<const char>(proptag);
+	if (!has_content(value))
+		return;
+	auto &line = card.append_line(line_key);
+	line.append_param("N");
+	line.append_value(value);
+}
+
+static void add_string_array(vcard &card, const STRING_ARRAY *arr,
+    const char *line_key)
+{
+	if (arr == nullptr)
+		return;
+	vcard_value *value = nullptr;
+	for (size_t i = 0; i < arr->count; ++i) {
+		auto entry = arr->ppstr[i];
+		if (!has_content(entry))
+			continue;
+		if (value == nullptr) {
+			auto &line = card.append_line(line_key);
+			value = &line.append_value();
+		}
+		value->append_subval(entry);
+	}
+}
+
+template<size_t N, typename Func>
+static void add_adr(vcard &card, const char *type, Func &&get_part)
+{
+	std::array<const char *, N> parts{};
+	bool has_value = false;
+	for (size_t idx = 0; idx < N; ++idx) {
+		const char *part = get_part(idx);
+		if (has_content(part)) {
+			parts[idx] = part;
+			has_value = true;
+		}
+	}
+	if (!has_value)
+		return;
+	auto &adr_line = card.append_line("ADR");
+	adr_line.append_param("TYPE", type);
+	adr_line.append_value(znul(parts[0]));
+	/* MAPI has 6 properties, but the ADR line has 7 fields. */
+	adr_line.append_value("");
+	for (size_t i = 1; i < N; ++i)
+		adr_line.append_value(znul(parts[i]));
+}
+
+static std::string join(const char *gn, const char *mn, const char *sn)
+{
+	std::string r = znul(gn);
+	if (mn != nullptr) {
+		r += " ";
+		r += mn;
+	}
+	if (sn != nullptr) {
+		r +=" ";
+		r += sn;
+	}
+	return r;
+}
+
+static std::nullptr_t xlog_null(const char *func, unsigned int line)
+{
+	mlog(LV_ERR, "%s:%u returned false", func, line);
+	return nullptr;
+}
+
+#define imp_null xlog_null(__func__, __LINE__)
+std::unique_ptr<message_content, mc_delete>
+oxvcard_converter::vcard_to_mapi(const vcard &vcard) try
+{
+	auto pvcard = &vcard;
+	int i;
+	int count;
+	int ufld_count;
+	int mail_count;
+	BOOL b_encoding;
+	struct tm tmp_tm;
+	uint8_t tmp_byte;
+	uint32_t tmp_int32;
+	uint64_t tmp_int64;
+	PROPID_ARRAY propids;
+	const char *address_type;
+	std::vector<std::string> child_strings;
+	ATTACHMENT_LIST *pattachments;
+	ATTACHMENT_CONTENT *pattachment;
+	
+	mail_count = 0;
+	ufld_count = 0;
+	if (!oxvcard_check_compatible(pvcard))
+		return imp_null;
+	std::unique_ptr<message_content, mc_delete> pmsg(message_content_init());
+	if (pmsg == nullptr)
+		return imp_null;
+	if (pmsg->proplist.set(PR_MESSAGE_CLASS, "IPM.Contact") != ecSuccess)
+		return imp_null;
+	for (const auto &line : pvcard->m_lines) try {
+		auto pvline = &line;
+		auto pvline_name = pvline->name();
+		if (strcasecmp(pvline_name, "UID") == 0) {
+			/* Deviation from MS-OXVCARD v8.3 §2.1.3.7.7 */
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				throw unrecog(line);
+			if (pmsg->proplist.set(g_vcarduid_proptag, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "FN") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				throw unrecog(line);
+			if (pmsg->proplist.set(PR_DISPLAY_NAME, pstring) != ecSuccess ||
+			    pmsg->proplist.set(PR_NORMALIZED_SUBJECT, pstring) != ecSuccess ||
+			    pmsg->proplist.set(PR_CONVERSATION_TOPIC, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "N") == 0) {
+			count = 0;
+			for (const auto &vnode : pvline->m_values) {
+				if (count > 4)
+					break;
+				auto pvvalue = &vnode;
+				auto list_count = pvvalue->m_subvals.size();
+				if (list_count > 1)
+					throw unrecog(line, vnode);
+				if (list_count > 0 &&
+				    !pvvalue->m_subvals[0].empty() &&
+				    pmsg->proplist.set(g_n_proptags[count], pvvalue->m_subvals[0].c_str()) != ecSuccess)
+					return imp_null;
+				count ++;
+			}
+		} else if (strcasecmp(pvline_name, "NICKNAME") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring != nullptr &&
+			    pmsg->proplist.set(PR_NICKNAME, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "PHOTO") == 0) {
+			if (pmsg->children.pattachments != nullptr)
+				throw unrecog(line);
+			b_encoding = FALSE;
+			const char *photo_type = nullptr;
+			for (const auto &prnode : pvline->m_params) {
+				auto pvparam = &prnode;
+				if (strcasecmp(pvparam->name(), "ENCODING") == 0) {
+					if (pvparam->m_paramvals.size() == 0)
+						throw unrecog(line, prnode);
+					if (strcasecmp(pvparam->m_paramvals[0].c_str(), "b") != 0 &&
+					    strcasecmp(pvparam->m_paramvals[0].c_str(), "base64") != 0)
+						throw unrecog(line, prnode);
+					b_encoding = TRUE;
+				} else if (strcasecmp(pvparam->name(), "TYPE") == 0) {
+					if (pvparam->m_paramvals.size() == 0)
+						throw unrecog(line, prnode);
+					auto &s = pvparam->m_paramvals[0];
+					if (s.empty())
+						throw unrecog(line, prnode);
+					photo_type = s.c_str();
+				}
+			}
+			if (!b_encoding || photo_type == nullptr)
+				throw unrecog(line);
+
+			if (!is_photo(photo_type))
+				throw unrecog(line);
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				throw unrecog(line);
+			pattachments = attachment_list_init();
+			if (pattachments == nullptr)
+				return imp_null;
+			pmsg->set_attachments_internal(pattachments);
+			pattachment = attachment_content_init();
+			if (pattachment == nullptr)
+				return imp_null;
+			if (!pattachments->append_internal(pattachment)) {
+				attachment_content_free(pattachment);
+				return imp_null;
+			}
+
+			auto picture = base64_decode(pstring);
+			BINARY tmp_bin;
+			tmp_bin.pv = deconst(picture.data());
+			tmp_bin.cb = picture.size();
+			if (pattachment->proplist.set(PR_ATTACH_DATA_BIN, &tmp_bin) != ecSuccess ||
+			    pattachment->proplist.set(PR_ATTACH_EXTENSION, photo_type) != ecSuccess)
+				return imp_null;
+			if (pattachment->proplist.set(PR_ATTACH_LONG_FILENAME,
+			    ("ContactPhoto."s + photo_type).c_str()) != ecSuccess)
+				return imp_null;
+			tmp_byte = 1;
+			if (pmsg->proplist.set(PR_ATTACHMENT_CONTACTPHOTO, &tmp_byte) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "BDAY") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			memset(&tmp_tm, 0, sizeof(tmp_tm));
+			if (NULL != strptime(pstring, "%Y-%m-%d", &tmp_tm)) {
+				tmp_int64 = rop_util_unix_to_nttime(timegm(&tmp_tm));
+				if (pmsg->proplist.set(PR_BIRTHDAY, &tmp_int64) != ecSuccess)
+					return imp_null;
+			}
+		} else if (strcasecmp(pvline_name, "ADR") == 0) {
+			auto pvparam = pvline->m_params.cbegin();
+			if (pvparam == pvline->m_params.cend())
+				throw unrecog(line);
+			if (strcasecmp(pvparam->name(), "TYPE") != 0 ||
+			    pvparam->m_paramvals.size() == 0)
+				throw unrecog(line, *pvparam);
+			address_type = pvparam->m_paramvals[0].c_str();
+
+			/* Map ADR's 7 fields to MAPI's 6 properties */
+			unsigned int vcf_idx = 0, mapi_idx = 0;
+			const std::string *ext_addr = nullptr;
+			for (const auto &vnode : pvline->m_values) {
+				if (mapi_idx >= std::size(g_homeaddr_proptags))
+					break;
+				auto pvvalue = &vnode;
+				auto list_count = pvvalue->m_subvals.size();
+				if (list_count > 1)
+					throw unrecog(line);
+				if (vcf_idx == 1 && list_count > 0) {
+					/* Save Extended Address for later concatenation with Street */
+					ext_addr = &pvvalue->m_subvals[0];
+					++vcf_idx;
+					continue;
+				}
+				std::string val;
+				if (list_count > 0)
+					val = pvvalue->m_subvals[0];
+				if (vcf_idx == 2 && ext_addr != nullptr && ext_addr->size() > 0) {
+					/* Prepend Extended Address to Street */
+					if (val.empty())
+						val = *ext_addr;
+					else
+						val = *ext_addr + "\n" + std::move(val);
+				}
+				++vcf_idx;
+				if (!val.empty()) {
+					uint32_t tag;
+					if (strcasecmp(address_type, "work") == 0)
+						tag = g_workaddr_proptags[mapi_idx];
+					else if (strcasecmp(address_type, "home") == 0)
+						tag = g_homeaddr_proptags[mapi_idx];
+					else
+						tag = g_otheraddr_proptags[mapi_idx];
+					if (pmsg->proplist.set(tag, val.c_str()) != ecSuccess)
+						return imp_null;
+				}
+				++mapi_idx;
+			}
+		} else if (strcasecmp(pvline_name, "TEL") == 0) {
+			auto pvparam = pvline->m_params.cbegin();
+			if (pvparam == pvline->m_params.cend())
+				throw unrecog(line);
+			if (strcasecmp(pvparam->name(), "TYPE") != 0 ||
+			    pvparam->m_paramvals.size() == 0)
+				throw unrecog(line);
+			auto keyword = pvparam->m_paramvals[0].c_str();
+			if (*keyword == '\0')
+				throw unrecog(line, *pvparam);
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			uint32_t tag = 0;
+			if (strcasecmp(keyword, "home") == 0) {
+				++pvparam;
+				if (pvparam == pvline->m_params.cend())
+					tag = pmsg->proplist.has(PR_HOME_TELEPHONE_NUMBER) ?
+					      PR_HOME2_TELEPHONE_NUMBER :
+					      PR_HOME_TELEPHONE_NUMBER;
+				else if (is_fax_param(*pvparam))
+					tag = PR_HOME_FAX_NUMBER;
+				else
+					throw unrecog(line, *pvparam);
+			} else if (strcasecmp(keyword, "voice") == 0) {
+				tag = PR_OTHER_TELEPHONE_NUMBER;
+			} else if (strcasecmp(keyword, "work") == 0) {
+				++pvparam;
+				if (pvparam == pvline->m_params.cend())
+					tag = pmsg->proplist.has(PR_BUSINESS_TELEPHONE_NUMBER) ?
+					      PR_BUSINESS2_TELEPHONE_NUMBER :
+					      PR_BUSINESS_TELEPHONE_NUMBER;
+				else if (is_fax_param(*pvparam))
+					tag = PR_BUSINESS_FAX_NUMBER;
+				else
+					throw unrecog(line, *pvparam);
+			} else if (strcasecmp(keyword, "cell") == 0) {
+				tag = PR_MOBILE_TELEPHONE_NUMBER;
+			} else if (strcasecmp(keyword, "pager") == 0) {
+				tag = PR_PAGER_TELEPHONE_NUMBER;
+			} else if (strcasecmp(keyword, "car") == 0) {
+				tag = PR_CAR_TELEPHONE_NUMBER;
+			} else if (strcasecmp(keyword, "isdn") == 0) {
+				tag = PR_ISDN_NUMBER;
+			} else if (strcasecmp(keyword, "pref") == 0) {
+				tag = PR_PRIMARY_TELEPHONE_NUMBER;
+			} else {
+				continue;
+			}
+			if (pmsg->proplist.set(tag, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "EMAIL") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			if (mail_count > 2)
+				continue;
+			if (pmsg->proplist.set(g_email_proptags[mail_count], pstring) != ecSuccess ||
+			    pmsg->proplist.set(g_addrtype_proptags[mail_count++], "SMTP") != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "TITLE") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			if (pmsg->proplist.set(PR_TITLE, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "ROLE") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			if (pmsg->proplist.set(PR_PROFESSION, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "ORG") == 0) {
+			auto pvvalue = pvline->m_values.cbegin();
+			if (pvvalue == pvline->m_values.cend())
+				continue;
+			if (pvvalue->m_subvals.size() > 0 &&
+			    !pvvalue->m_subvals[0].empty() &&
+			    pmsg->proplist.set(PR_COMPANY_NAME, pvvalue->m_subvals[0].c_str()) != ecSuccess)
+				return imp_null;
+			++pvvalue;
+			if (pvvalue != pvline->m_values.cend()) {
+				if (pvvalue->m_subvals.size() > 0 &&
+				    !pvvalue->m_subvals[0].empty() &&
+				    pmsg->proplist.set(PR_DEPARTMENT_NAME, pvvalue->m_subvals[0].c_str()) != ecSuccess)
+					return imp_null;
+			}
+		} else if (strcasecmp(pvline_name, "CATEGORIES") == 0) {
+			auto pvvalue = pvline->m_values.cbegin();
+			if (pvvalue == pvline->m_values.cend())
+				continue;
+			std::vector<char *> ptrs;
+			STRING_ARRAY strings_array;
+			for (const auto &sv : pvvalue->m_subvals) {
+				if (sv.empty())
+					continue;
+				ptrs.push_back(deconst(sv.c_str()));
+				if (ptrs.size() >= 128)
+					break;
+			}
+			strings_array.count = ptrs.size();
+			strings_array.ppstr = ptrs.data();
+			if (strings_array.count != 0 &&
+			    pmsg->proplist.set(g_categories_proptag, &strings_array) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "NOTE") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			if (pmsg->proplist.set(PR_BODY, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "REV") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			memset(&tmp_tm, 0, sizeof(tmp_tm));
+			if (NULL != strptime(pstring, "%Y-%m-%dT%H:%M:%S", &tmp_tm)) {
+				tmp_int64 = rop_util_unix_to_nttime(timegm(&tmp_tm));
+				if (pmsg->proplist.set(PR_LAST_MODIFICATION_TIME, &tmp_int64) != ecSuccess)
+					return imp_null;
+			}
+		} else if (strcasecmp(pvline_name, "URL") == 0) {
+			auto pvparam = pvline->m_params.cbegin();
+			if (pvparam == pvline->m_params.cend())
+				throw unrecog(line);
+			if (strcasecmp(pvparam->name(), "TYPE") != 0 ||
+			    pvparam->m_paramvals.size() == 0)
+				throw unrecog(line);
+			auto keyword = pvparam->m_paramvals[0].c_str();
+			if (*keyword == '\0')
+				throw unrecog(line, *pvparam);
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			uint32_t tag;
+			if (strcasecmp(keyword, "home") == 0)
+				tag = PR_PERSONAL_HOME_PAGE;
+			else if (strcasecmp(keyword, "work") == 0)
+				tag = PR_BUSINESS_HOME_PAGE;
+			else
+				continue;
+			if (pmsg->proplist.set(tag, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "CLASS") == 0) {
+		auto pstring = pvline->get_first_subval();
+		if (pstring != nullptr) {
+			if (strcasecmp(pstring, "PRIVATE") == 0)
+				tmp_int32 = SENSITIVITY_PRIVATE;
+			else if (strcasecmp(pstring, "CONFIDENTIAL") == 0)
+				tmp_int32 = SENSITIVITY_COMPANY_CONFIDENTIAL;
+			else
+				tmp_int32 = SENSITIVITY_NONE;
+			if (pmsg->proplist.set(PR_SENSITIVITY, &tmp_int32) != ecSuccess)
+				return imp_null;
+		}
+		} else if (strcasecmp(pvline_name, "KEY") == 0) {
+			auto pvparam = pvline->m_params.cbegin();
+			if (pvparam == pvline->m_params.cend())
+				throw unrecog(line);
+			if (strcasecmp(pvparam->name(), "ENCODING") != 0 ||
+			    pvparam->m_paramvals.size() == 0 ||
+			    strcasecmp(pvparam->m_paramvals[0].c_str(), "b") != 0)
+				throw unrecog(line, *pvparam);
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				throw unrecog(line);
+
+			auto cert = base64_decode(pstring);
+			BINARY bin[1];
+			bin[0].pc = deconst(cert.c_str());
+			bin[0].cb = cert.size();
+			BINARY_ARRAY bin_array;
+			bin_array.count = std::size(bin);
+			bin_array.pbin = bin;
+			if (pmsg->proplist.set(PR_USER_X509_CERTIFICATE, &bin_array) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "X-MS-OL-DESIGN") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			BINARY tmp_bin;
+			tmp_bin.cb = strlen(pstring);
+			tmp_bin.pv = deconst(pstring);
+			if (pmsg->proplist.set(g_bcd_proptag, &tmp_bin) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "X-MS-CHILD") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			child_strings.emplace_back(pstring);
+		} else if (strcasecmp(pvline_name, "X-MS-TEXT") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			if (ufld_count > 3)
+				throw unrecog(line);
+			if (pmsg->proplist.set(g_ufld_proptags[ufld_count++], pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "X-MS-IMADDRESS") == 0 ||
+		    strcasecmp(pvline_name, "X-MS-RM-IMACCOUNT") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			if (pmsg->proplist.set(g_im_proptag, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "X-MS-TEL") == 0) {
+			auto pvparam = pvline->m_params.cbegin();
+			if (pvparam == pvline->m_params.cend())
+				throw unrecog(line);
+			if (pvparam->m_paramvals.size() != 0)
+				throw unrecog(line, *pvparam);
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			uint32_t tag;
+			auto pvparam_name = pvparam->name();
+			if (strcasecmp(pvparam_name, "ASSISTANT") == 0)
+				tag = PR_ASSISTANT_TELEPHONE_NUMBER;
+			else if (strcasecmp(pvparam_name, "CALLBACK") == 0)
+				tag = PR_CALLBACK_TELEPHONE_NUMBER;
+			else if (strcasecmp(pvparam_name, "COMPANY") == 0)
+				tag = PR_COMPANY_MAIN_PHONE_NUMBER;
+			else if (strcasecmp(pvparam_name, "RADIO") == 0)
+				tag = PR_RADIO_TELEPHONE_NUMBER;
+			else if (strcasecmp(pvparam_name, "TTYTTD") == 0)
+				tag = PR_TTYTDD_PHONE_NUMBER;
+			else
+				throw unrecog(line, *pvparam);
+			if (pmsg->proplist.set(tag, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "X-MS-ANNIVERSARY") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			memset(&tmp_tm, 0, sizeof(tmp_tm));
+			if (NULL != strptime(pstring, "%Y-%m-%d", &tmp_tm)) {
+				tmp_int64 = rop_util_unix_to_nttime(timegm(&tmp_tm));
+				if (pmsg->proplist.set(PR_WEDDING_ANNIVERSARY, &tmp_int64) != ecSuccess)
+					return imp_null;
+			}	
+		} else if (strcasecmp(pvline_name, "X-MS-SPOUSE") == 0) {
+			auto pvparam = pvline->m_params.cbegin();
+			if (pvparam == pvline->m_params.cend())
+				throw unrecog(line);
+			if (strcasecmp(pvparam->name(), "N") != 0 ||
+			    pvparam->m_paramvals.size() != 0)
+				throw unrecog(line, *pvparam);
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			if (pmsg->proplist.set(PR_SPOUSE_NAME, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "X-MS-MANAGER") == 0) {
+			auto pvparam = pvline->m_params.cbegin();
+			if (pvparam == pvline->m_params.cend())
+				throw unrecog(line);
+			if (strcasecmp(pvparam->name(), "N") != 0 ||
+			    pvparam->m_paramvals.size() != 0)
+				throw unrecog(line, *pvparam);
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			if (pmsg->proplist.set(PR_MANAGER_NAME, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "X-MS-ASSISTANT") == 0) {
+			auto pvparam = pvline->m_params.cbegin();
+			if (pvparam == pvline->m_params.cend())
+				throw unrecog(line);
+			if (strcasecmp(pvparam->name(), "N") != 0 ||
+			    pvparam->m_paramvals.size() != 0)
+				throw unrecog(line, *pvparam);
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			if (pmsg->proplist.set(PR_ASSISTANT, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "FBURL") == 0) {
+			auto pstring = pvline->get_first_subval();
+			if (pstring == nullptr)
+				continue;
+			if (pmsg->proplist.set(g_fbl_proptag, pstring) != ecSuccess)
+				return imp_null;
+		} else if (strcasecmp(pvline_name, "X-MS-INTERESTS") == 0) {
+			auto pvvalue = pvline->m_values.cbegin();
+			if (pvvalue == pvline->m_values.cend())
+				continue;
+			std::string str;
+			for (const auto &sv : pvvalue->m_subvals) {
+				if (sv.empty())
+					continue;
+				if (!str.empty())
+					str += ", ";
+				str += sv;
+			}
+			if (!str.empty() &&
+			    pmsg->proplist.set(PR_HOBBIES, str.c_str()) != ecSuccess)
+				return imp_null;
+		}
+	} catch (const unrecog &e) {
+		if (g_oxvcard_pedantic) {
+			mlog(LV_ERR, "E-2140: oxvcard_import stopped parsing that vcard due to pedantry: %s", e.what());
+			return nullptr;
+		}
+	}
+
+	if (child_strings.size() > 0) {
+		std::vector<const char *> ptrs;
+		for (const auto &s : child_strings)
+			ptrs.push_back(s.c_str());
+		STRING_ARRAY sa;
+		sa.count = ptrs.size();
+		sa.ppstr = const_cast<char **>(ptrs.data());
+		if (pmsg->proplist.set(PR_CHILDRENS_NAMES, &sa) != ecSuccess)
+			return imp_null;
+	}
+	if (!pmsg->proplist.has(PR_DISPLAY_NAME)) {
+		auto dn = join(pmsg->proplist.get<char>(PR_GIVEN_NAME),
+		          pmsg->proplist.get<char>(PR_MIDDLE_NAME),
+		          pmsg->proplist.get<char>(PR_SURNAME));
+		if (pmsg->proplist.set(PR_DISPLAY_NAME, dn.c_str()) != ecSuccess)
+			return imp_null;
+	}
+	if (!pmsg->proplist.has(PR_NORMALIZED_SUBJECT)) {
+		auto dn = pmsg->proplist.get<const char>(PR_DISPLAY_NAME);
+		if (dn != nullptr && pmsg->proplist.set(PR_NORMALIZED_SUBJECT, dn) != ecSuccess)
+			return imp_null;
+	}
+	if (!pmsg->proplist.has(PR_CONVERSATION_TOPIC)) {
+		auto dn = pmsg->proplist.get<const char>(PR_DISPLAY_NAME);
+		if (dn != nullptr && pmsg->proplist.set(PR_CONVERSATION_TOPIC, dn) != ecSuccess)
+			return imp_null;
+	}
+	for (i=0; i<pmsg->proplist.count; i++) {
+		auto proptag = pmsg->proplist.ppropval[i].proptag;
+		auto propid = PROP_ID(proptag);
+		if (is_nameprop_id(propid))
+			break;
+	}
+	if (i >= pmsg->proplist.count)
+		/* If no namedprops were set, we can exit early */
+		return pmsg;
+
+	/* Remap our "bf" propids to the caller's space */
+	if (!oxvcard_get_propids(&propids, get_propids))
+		return imp_null;
+	for (i=0; i<pmsg->proplist.count; i++) {
+		auto proptag = pmsg->proplist.ppropval[i].proptag;
+		auto propid = PROP_ID(proptag);
+		if (!is_nameprop_id(propid))
+			continue;
+		uint16_t idx = propid - 0x8000;
+		if (idx >= propids.size())
+			continue; /* Skip invalid propids */
+		proptag = propids[idx];
+		pmsg->proplist.ppropval[i].proptag =
+			PROP_TAG(PROP_TYPE(pmsg->proplist.ppropval[i].proptag), proptag);
+	}
+	return pmsg;
+} catch (const std::bad_alloc &) {
+	mlog(LV_ERR, "%s: ENOMEM", __func__);
+	return nullptr;
+}
+#undef imp_null
+
+void oxvcard_get_abentry_proptags(PROPTAG_ARRAY *pproptags)
+{
+	pproptags->count = std::size(g_abentry_proptags);
+	pproptags->pproptag = deconst(g_abentry_proptags);
+}
+
+bool oxvcard_converter::abentry_to_vcard(const TPROPVAL_ARRAY &props,
+    bool is_group, vcard &out) try
+{
+	std::unique_ptr<message_content, mc_delete> msg(message_content_init());
+	if (msg == nullptr)
+		return false;
+	if (!oxvcard_abentry_to_contact(props, is_group, get_propids, *msg))
+		return false;
+	if (!mapi_to_vcard(*msg, out))
+		return false;
+	out.append_line("KIND", is_group ? "group" : "individual");
+	return true;
+} catch (const std::bad_alloc &) {
+	mlog(LV_ERR, "%s: ENOMEM", __func__);
+	return false;
+}
+
+bool oxvcard_converter::mapi_to_vcard(const message_content &msg, vcard &vcard) try
+{
+	auto pmsg = &msg;
+	const char *pvalue;
+	struct tm tmp_tm;
+	PROPID_ARRAY propids{};
+	auto remap_tag = [&](proptag_t t) -> proptag_t {
+		/* Given one of the source pseudo proptags like 0x8000001F, emit the actual proptag */
+		return PROP_TAG(PROP_TYPE(t), propids[PROP_ID(t)-0x8000]);
+	};
+	const char *photo_type;
+	std::string vcarduid;
+	static constexpr const char *tel_types[] =
+		{"HOME", "HOME", "VOICE", "WORK", "WORK",
+		"CELL", "PAGER", "CAR", "ISDN", "PREF"};
+	static constexpr const char *ms_tel_types[] =
+		{"ASSISTANT", "CALLBACK", "COMPANY", "RADIO", "TTYTTD"};
+	static constexpr proptag_t tel_proptags[] =
+		{PR_HOME_TELEPHONE_NUMBER, PR_HOME2_TELEPHONE_NUMBER,
+		PR_OTHER_TELEPHONE_NUMBER, PR_BUSINESS_TELEPHONE_NUMBER,
+		PR_BUSINESS2_TELEPHONE_NUMBER, PR_MOBILE_TELEPHONE_NUMBER,
+		PR_PAGER_TELEPHONE_NUMBER, PR_CAR_TELEPHONE_NUMBER,
+		PR_ISDN_NUMBER, PR_PRIMARY_TELEPHONE_NUMBER};
+	static constexpr proptag_t ms_tel_proptags[] =
+		{PR_ASSISTANT_TELEPHONE_NUMBER, PR_CALLBACK_TELEPHONE_NUMBER,
+		PR_COMPANY_MAIN_PHONE_NUMBER, PR_RADIO_TELEPHONE_NUMBER,
+		PR_TTYTDD_PHONE_NUMBER};
+	
+	if (!oxvcard_get_propids(&propids, get_propids))
+		return FALSE;
+	vcard.clear();
+	vcard.append_line("VERSION", "4.0");
+	vcard.append_line("PROFILE", "VCARD");
+	vcard.append_line("MAILER", "gromox-oxvcard");
+	vcard.append_line("PRODID", "gromox-oxvcard");
+
+	pvalue = pmsg->proplist.get<char>(PR_DISPLAY_NAME);
+	if (!has_content(pvalue))
+		pvalue = pmsg->proplist.get<char>(PR_NORMALIZED_SUBJECT);
+	if (has_content(pvalue))
+		vcard.append_line("FN", pvalue);
+
+	const char *name_parts[std::size(g_n_proptags)]{};
+	bool has_name_part = false;
+	for (size_t i = 0; i < std::size(g_n_proptags); ++i) {
+		pvalue = pmsg->proplist.get<char>(g_n_proptags[i]);
+		if (has_content(pvalue)) {
+			name_parts[i] = pvalue;
+			has_name_part = true;
+		}
+	}
+	if (has_name_part) {
+		auto &n_line = vcard.append_line("N");
+		for (const auto *part : name_parts)
+			n_line.append_value(znul(part));
+	}
+
+	pvalue = pmsg->proplist.get<char>(PR_NICKNAME);
+	if (has_content(pvalue))
+		vcard.append_line("NICKNAME", pvalue);
+	
+	for (size_t i = 0; i < std::size(g_email_proptags); ++i) {
+		pvalue = pmsg->proplist.get<char>(remap_tag(g_email_proptags[i]));
+		if (!has_content(pvalue))
+			continue;
+		auto &email_line = vcard.append_line("EMAIL");
+		auto &type_param = email_line.append_param("TYPE");
+		type_param.append_paramval("INTERNET");
+		if (i == 0)
+			type_param.append_paramval("PREF");
+		email_line.append_value(pvalue);
+	}
+	
+	auto flag = pmsg->proplist.get<const uint8_t>(remap_tag(g_hasphoto_proptag));
+	if (flag != nullptr && *flag != 0 && pmsg->children.pattachments != nullptr) {
+		for (auto &at : *pmsg->children.pattachments) {
+			flag = at.proplist.get<uint8_t>(PR_ATTACHMENT_CONTACTPHOTO);
+			if (flag == nullptr || *flag == 0)
+				continue;
+			pvalue = at.proplist.get<char>(PR_ATTACH_EXTENSION);
+			if (pvalue == nullptr)
+				continue;
+			if (*pvalue == '.')
+				++pvalue;
+			if (strcasecmp(pvalue, "jpg") == 0)
+				pvalue = "JPEG";
+			photo_type = pvalue;
+			auto bv = at.proplist.get<const BINARY>(PR_ATTACH_DATA_BIN);
+			if (bv == nullptr)
+				continue;
+			auto &photo_line = vcard.append_line("PHOTO");
+			photo_line.append_param("TYPE", photo_type);
+			photo_line.append_param("ENCODING", "BASE64");
+			photo_line.append_value(base64_encode(*bv));
+			break;
+		}
+	}
+	
+	pvalue = pmsg->proplist.get<char>(PR_BODY);
+	if (has_content(pvalue))
+		vcard.append_line("NOTE", pvalue);
+	
+	const char *company = pmsg->proplist.get<char>(PR_COMPANY_NAME);
+	const char *department = pmsg->proplist.get<char>(PR_DEPARTMENT_NAME);
+	if (has_content(company) || has_content(department)) {
+		auto &org_line = vcard.append_line("ORG");
+		org_line.append_value(znul(company));
+		org_line.append_value(znul(department));
+	}
+	
+	auto num = pmsg->proplist.get<uint32_t>(PR_SENSITIVITY);
+	if (num == nullptr)
+		pvalue = "PUBLIC";
+	else if (*num == SENSITIVITY_COMPANY_CONFIDENTIAL)
+		pvalue = "CONFIDENTIAL";
+	else if (*num == SENSITIVITY_PRIVATE)
+		pvalue = "PRIVATE";
+	else
+		pvalue = "PUBLIC";
+	vcard.append_line("CLASS", pvalue);
+	
+	add_adr<std::size(g_workaddr_proptags)>(vcard, "WORK", [&](unsigned int idx) {
+		return pmsg->proplist.get<const char>(remap_tag(g_workaddr_proptags[idx]));
+	});
+	add_adr<std::size(g_homeaddr_proptags)>(vcard, "HOME", [&](unsigned int idx) {
+		return pmsg->proplist.get<const char>(g_homeaddr_proptags[idx]);
+	});
+	add_adr<std::size(g_otheraddr_proptags)>(vcard, "POSTAL", [&](unsigned int idx) {
+		return pmsg->proplist.get<const char>(g_otheraddr_proptags[idx]);
+	});
+
+	for (size_t i = 0; i < std::size(tel_proptags); ++i) {
+		pvalue = pmsg->proplist.get<char>(tel_proptags[i]);
+		if (!has_content(pvalue))
+			continue;
+		auto &tel_line = vcard.append_line("TEL");
+		tel_line.append_param("TYPE", tel_types[i]);
+		tel_line.append_value(pvalue);
+	}
+	
+	pvalue = pmsg->proplist.get<char>(PR_HOME_FAX_NUMBER);
+	if (has_content(pvalue)) {
+		auto &tel_line = vcard.append_line("TEL");
+		tel_line.append_param("TYPE", "HOME");
+		tel_line.append_param("FAX");
+		tel_line.append_value(pvalue);
+	}
+	
+	pvalue = pmsg->proplist.get<char>(PR_BUSINESS_FAX_NUMBER);
+	if (has_content(pvalue)) {
+		auto &tel_line = vcard.append_line("TEL");
+		tel_line.append_param("TYPE", "WORK");
+		tel_line.append_param("FAX");
+		tel_line.append_value(pvalue);
+	}
+	
+	add_string_array(vcard, pmsg->proplist.get<const STRING_ARRAY>(remap_tag(g_categories_proptag)), "CATEGORIES");
+	
+	pvalue = pmsg->proplist.get<char>(PR_PROFESSION);
+	if (has_content(pvalue))
+		vcard.append_line("ROLE", pvalue);
+	
+	pvalue = pmsg->proplist.get<char>(PR_PERSONAL_HOME_PAGE);
+	if (has_content(pvalue)) {
+		auto &url_line = vcard.append_line("URL");
+		url_line.append_param("TYPE", "HOME");
+		url_line.append_value(pvalue);
+	}
+	
+	pvalue = pmsg->proplist.get<char>(PR_BUSINESS_HOME_PAGE);
+	if (has_content(pvalue)) {
+		auto &url_line = vcard.append_line("URL");
+		url_line.append_param("TYPE", "WORK");
+		url_line.append_value(pvalue);
+	}
+	
+	pvalue = pmsg->proplist.get<char>(remap_tag(g_bcd_proptag));
+	if (has_content(pvalue))
+		vcard.append_line("X-MS-OL-DESIGN", pvalue);
+
+	add_string_array(vcard, pmsg->proplist.get<const STRING_ARRAY>(PR_CHILDRENS_NAMES), "X-MS-CHILD");
+	
+	for (size_t i = 0; i < std::size(g_ufld_proptags); ++i) {
+		pvalue = pmsg->proplist.get<char>(remap_tag(g_ufld_proptags[i]));
+		if (!has_content(pvalue))
+			continue;
+		vcard.append_line("X-MS-TEXT", pvalue);
+	}
+	
+	for (size_t i = 0; i < std::size(ms_tel_proptags); ++i) {
+		pvalue = pmsg->proplist.get<char>(ms_tel_proptags[i]);
+		if (!has_content(pvalue))
+			continue;
+		auto &tel_line = vcard.append_line("X-MS-TEL");
+		tel_line.append_param("TYPE", ms_tel_types[i]);
+		tel_line.append_value(pvalue);
+	}
+	
+	add_person(vcard, *pmsg, PR_SPOUSE_NAME, "X-MS-SPOUSE");
+	add_person(vcard, *pmsg, PR_MANAGER_NAME, "X-MS-MANAGER");
+	add_person(vcard, *pmsg, PR_ASSISTANT, "X-MS-ASSISTANT");
+	
+	pvalue = pmsg->proplist.get<char>(remap_tag(g_vcarduid_proptag));
+	if (!has_content(pvalue)) {
+		auto guid = GUID::random_new();
+		vcarduid = "uuid:" + bin2hex(guid);
+		pvalue = vcarduid.c_str();
+	}
+	if (has_content(pvalue))
+		vcard.append_line("UID", pvalue);
+
+	pvalue = pmsg->proplist.get<char>(remap_tag(g_fbl_proptag));
+	if (has_content(pvalue))
+		vcard.append_line("FBURL", pvalue);
+	
+	pvalue = pmsg->proplist.get<char>(PR_HOBBIES);
+	if (has_content(pvalue))
+		vcard.append_line("X-MS-INTERESTS", pvalue);
+	
+	auto ba = pmsg->proplist.get<const BINARY_ARRAY>(PR_USER_X509_CERTIFICATE);
+	if (ba != nullptr && ba->count != 0) {
+		auto &key_line = vcard.append_line("KEY");
+		key_line.append_param("ENCODING", "B");
+		key_line.append_value(base64_encode(ba->pbin[0]));
+	}
+	
+	pvalue = pmsg->proplist.get<char>(PR_TITLE);
+	if (has_content(pvalue))
+		vcard.append_line("TITLE", pvalue);
+
+	pvalue = pmsg->proplist.get<char>(remap_tag(g_im_proptag));
+	if (has_content(pvalue))
+		vcard.append_line("X-MS-IMADDRESS", pvalue);
+	
+	auto lnum = pmsg->proplist.get<uint64_t>(PR_BIRTHDAY);
+	if (lnum != nullptr) {
+		auto unix_time = rop_util_nttime_to_unix(*lnum);
+		if (gmtime_r(&unix_time, &tmp_tm) != nullptr) {
+			char tb[16];
+			strftime(tb, std::size(tb), "%Y-%m-%d", &tmp_tm);
+			auto &day_line = vcard.append_line("BDAY");
+			day_line.append_param("VALUE", "DATE");
+			day_line.append_value(tb);
+		}
+	}
+	
+	lnum = pmsg->proplist.get<uint64_t>(PR_LAST_MODIFICATION_TIME);
+	if (lnum != nullptr) {
+		auto unix_time = rop_util_nttime_to_unix(*lnum);
+		if (gmtime_r(&unix_time, &tmp_tm) != nullptr) {
+			char tb[24];
+			strftime(tb, std::size(tb), "%Y-%m-%dT%H:%M:%SZ", &tmp_tm);
+			auto &day_line = vcard.append_line("REV");
+			day_line.append_param("VALUE", "DATE-TIME");
+			day_line.append_value(tb);
+		}
+	}
+	
+	lnum = pmsg->proplist.get<uint64_t>(PR_WEDDING_ANNIVERSARY);
+	if (lnum != nullptr) {
+		auto unix_time = rop_util_nttime_to_unix(*lnum);
+		if (gmtime_r(&unix_time, &tmp_tm) != nullptr) {
+			char tb[16];
+			strftime(tb, std::size(tb), "%Y-%m-%d", &tmp_tm);
+			auto &day_line = vcard.append_line("X-MS-ANNIVERSARY");
+			day_line.append_param("VALUE", "DATE");
+			day_line.append_value(tb);
+		}
+	}
+	return TRUE;
+} catch (const std::bad_alloc &) {
+	mlog(LV_ERR, "%s: ENOMEM", __func__);
+	return false;
+}

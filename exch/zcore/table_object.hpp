@@ -1,0 +1,69 @@
+#pragma once
+#include <cstdint>
+#include <memory>
+#include <vector>
+#include <gromox/mapi_types.hpp>
+
+enum class zcore_tbltype {
+	invalid = 0,
+	store = 1,       /* pparent_obj is a nullptr */
+	hierarchy = 2,   /* pparent_obj is a folder_object */
+	content = 3,     /* pparent_obj is a folder_object */
+	rule = 4,        /* pparent_obj is a uint64_t */
+	attachment = 5,  /* pparent_obj is a message_object */
+	recipient = 6,   /* pparent_obj is a message_object */
+	container = 7,   /* pparent_obj is a container_object */
+	abcontusr = 8,   /* pparent_obj is a container_object */
+	distlist = 9,    /* pparent_obj is a user_object */
+};
+
+struct store_object;
+
+struct bookmark_node {
+	uint32_t index = 0, row_type = 0, inst_num = 0, position = 0;
+	uint64_t inst_id = 0;
+};
+
+/**
+ * @fixed_data:		in case @pparent_obj (i.e. the provider of table data)
+ *  			is nullptr, data can be statically placed in fixed_data.
+ */
+struct table_object {
+	protected:
+	table_object() = default;
+	NOMOVE(table_object);
+
+	public:
+	~table_object();
+	static std::unique_ptr<table_object> create(store_object *, void *parent, zcore_tbltype, uint32_t table_flags);
+	const proptag_vector *get_columns() const { return m_colset ? &m_columns : nullptr; }
+	ec_error_t set_columns(proptag_cspan);
+	ec_error_t set_sorts(const SORTORDER_SET *);
+	ec_error_t load();
+	void unload();
+	ec_error_t query_rows(const proptag_cspan *cols, uint32_t row_count, TARRAY_SET *);
+	ec_error_t set_restriction(const RESTRICTION *);
+	void seek_current(BOOL forward, uint32_t row_count);
+	uint32_t get_position() const { return position; }
+	void set_position(uint32_t pos);
+	void clear_position() { position = 0; }
+	uint32_t get_total();
+	ec_error_t create_bookmark(uint32_t *index);
+	void remove_bookmark(uint32_t index);
+	void clear_bookmarks() { bookmark_list.clear(); }
+	ec_error_t retrieve_bookmark(uint32_t index, BOOL *exist);
+	ec_error_t filter_rows(uint32_t count, const RESTRICTION *, TARRAY_SET *);
+	ec_error_t match_row(BOOL forward, const RESTRICTION *, int32_t *pos);
+
+	store_object *pstore = nullptr;
+	uint32_t handle = 0, table_flags = 0;
+	void *pparent_obj = nullptr;
+	zcore_tbltype table_type{};
+	bool m_loaded = false, m_colset = false;
+	tarray_set *fixed_data = nullptr;
+	proptag_vector m_columns;
+	SORTORDER_SET *psorts = nullptr;
+	RESTRICTION *prestriction = nullptr;
+	uint32_t position = 0, table_id = 0, bookmark_index = 0;
+	std::vector<bookmark_node> bookmark_list;
+};

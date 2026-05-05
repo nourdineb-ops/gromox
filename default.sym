@@ -1,0 +1,25 @@
+{
+global:
+	HPM_*;
+	HOOK_*;
+	PROC_*;
+	SVC_*;
+	get_module*;
+	pam_sm_authenticate*;
+	pam_sm_setcred*;
+	/* Stay global so the linker can merge definitions to satisfy ODR */
+	extern "C++" {
+		std::*::_S_*;
+	};
+	_ZGV*;
+	_ZT*;
+
+	extern "C++" {
+		gromox::ab_tree::*;
+		midb_agent::*;
+		mysql_adaptor_*;
+		sql_user::*;
+	};
+local:
+	*;
+};

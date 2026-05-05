@@ -1,0 +1,312 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2025 grommunio GmbH
+.TH http 8gx "" "Gromox" "Gromox admin reference"
+.SH Name
+http \(em Protocol handler for HTTP and RPCH
+.SH Synopsis
+\fBhttp\fP [\fB\-c\fP \fIconfig\fP]
+.SH Description
+http(8gx) is a trivial HTTP server. It understands the special HTTP methods as
+used by RPC-over-HTTP protocol as used by Outlook, it can serve files verbatim,
+or forward requests to a FastCGI server such as php-fpm(8).
+.PP
+Generally, http(8gx) also executed the Information Store, exmdb_provider(4gx),
+which is a loadable module.
+.SH Options
+.TP
+\fB\-c\fP \fIconfig\fP
+Read configuration directives from the given file. If this option is not
+specified, /etc/gromox/gromox.cfg and /etc/gromox/http.cfg will be read.
+.TP
+\fB\-?\fP
+Display option summary.
+.SH URI processing order
+.IP \(bu 4
+Requests are passed to the mod_rewrite(4gx) module (built-in) to have their URI
+potentially rewritten.
+.IP \(bu 4
+If a HTTP request is using the methods RPC_IN_DATA or RPC_OUT_DATA, the data
+stream is handed off to the exchange_emsmdb(4gx) component.
+.IP \(bu 4
+Otherwise, HTTP processing modules (HPM) are invoked. Processing ends when
+one module signals that the request was handled. The order depends on the HPM
+list (which is fixed): ews, mh_emsmdb, mh_nsp, oxdisco, oab.
+.IP \(bu 4
+Otherwise, the mod_fastcgi(4gx) module (built-in) is invoked. Processing ends
+if the module handled the request.
+.IP \(bu 4
+Otherwise, the mod_cache(4gx) module (built-in) is invoked. Processing ends
+if the module handled the request.
+.IP \(bu 4
+Otherwise, the request is rejected.
+.SH RPC-over-HTTP
+RPC-over-HTTP utilizes two special HTTP methods, RPC_IN_DATA and RPC_OUT_DATA.
+These requests can, similarly to HTTP CONNECT, be very long-lived. The RPC data
+stream is handled by the included exchange_emsmdb(4gx) component.
+.PP
+All time-based command-line options and configuration file directives are
+subject to the syntax described in gromox(7), section "Duration
+specifications".
+.SH Configuration directives (gromox.cfg)
+The following directives are recognized when reading from
+/etc/gromox/gromox.cfg, or when the \fB\-c\fP option is used to specify a
+custom file:
+.TP
+\fBdaemons_fd_limit\fP
+In gromox-http, this is treated as an alias for http_fd_limit.
+.TP
+\fBhttp_basic_auth_cred_caching\fP
+Perform credential caching for HTTP Basic.
+.br
+Default: \fI1minute\fP
+.TP
+\fBhttp_fd_limit\fP
+Request that the file descriptor table be at least this large. The magic value
+0 indicates that the system default hard limit (rlim_max, cf. setrlimit(2))
+should be used.
+.br
+Default: \fI0\fP
+.TP
+\fBhttp_listen\fP
+A space-separated list of bind address specifiers to expose HTTP on.
+.br
+Default: \fB[::]:80\fP
+.TP
+\fBhttp_listen_tls\fP
+A space-separated list of bind address specifiers to expose implicit-TLS
+(HTTPS) on.
+.br
+Default: \fB[::]:443\fP
+.TP
+\fBhttp_remote_host_hdr\fP
+The name of the HTTP request header which contains the actual client IPv6/IPv4
+address. When a (reverse) proxy is placed in front of gromox-http, the address
+gxhttp normally sees is the proxy address (e.g. ::1). If the proxy sets a
+custom header to convey the actual client address, Gromox can pick this up for
+its own reporting, which in turn is useful for e.g. fail2ban setups.
+.br
+Default: (empty)
+.TP
+\fBistore_standalone\fP
+A bitmask controlling how the Information Store code should run as separate
+processes in separate address spaces. See istore(8gx) for details.
+.br
+Default: \fI0\fP
+.SH Configuration directives (http.cfg)
+The following directives are recognized when reading from /etc/gromox/http.cfg,
+or when the \fB\-c\fP option is used to specify a custom file:
+.TP
+\fBblock_interval_auths\fP
+The amount of time a user is blocked from connecting to the service after too
+many failed logins.
+.br
+Default: \fI1 minute\fP
+.TP
+\fBconfig_file_path\fP
+Colon-separated list of directories which will be scanned when locating further
+configuration files, especially those used by subcomponent instances. (For
+example, mysql_adaptor(4gx) would be directed to look at
+/etc/gromox/http/mysql_adaptor.cfg before /etc/gromox/mysql_adaptor.cfg.)
+.br
+Default: \fI/etc/gromox/http:/etc/gromox\fP
+.TP
+\fBcontext_average_mem\fP
+Default: \fI256K\fP
+.TP
+\fBcontext_num\fP
+Default: \fI400\fP
+.TP
+\fBdata_file_path\fP
+Colon-separated list of directories which will be scanned when locating data
+files.
+.br
+Default: \fI/usr/share/gromox/http\fP
+.TP
+\fBfastcgi_exec_timeout\fP
+Maximum execution time for CGI scripts.
+.br
+Default: \fI10 minutes\fP
+.TP
+\fBgss_program\fP
+The helper program to use for authenticating HTTP requests when
+Negotiate-SPNEGO headers are presented. The value is rudimentarily tokenized at
+whitespaces, and no special characters may be used. If necessary, write your
+own wrapper. The special value "internal-gss" uses libgssapi directly.
+.br
+Negotiate was meant to carry GSS-API auth data (appearing as "Authorization:
+Negotiate YII..." in HTTP protocol dumps). NTLM can be wrapped in SPNEGO (also
+shows up as "YII"), but a handful of clients may also send raw NTLM tokens
+(appearing as "Authorization: Negotiate TlRMTVNT..."). Whether raw NTLM tokens
+are accepted by internal-gss depends on your GSS library and, more broadly,
+your Kerberos setup. Otherwise, you may need to use a helper program like the
+one from Squid. internal-gss also does not offer a way to specify a separate
+keytab or replay cache parameters, so use Squid's helper if you need such
+parameters.
+.br
+Default: \fIinternal\-gss\fP
+.br
+Example: \fI/usr/lib/squid/negotiate_wrapper_auth \-\-ntlm /usr/bin/ntlm_auth
+\-\-helper\-protocol=squid\-2.5\-ntlmssp \-\-kerberos
+/usr/lib/squid/negotiate_kerberos_auth \-s GSS_C_NO_NAME\fP
+.TP
+\fBhost_id\fP
+A unique identifier for this system. It is used for the Server HTTP responses
+header, for components like exmdb_provider(4gx), which makes use of it for
+SMTP HELO lines, for DSN report texts, for MIDB database/EML cache. The
+identifier should only use characters allowed for hostnames.
+.br
+Default: (system hostname)
+.TP
+\fBhttp_auth_basic\fP
+Enable HTTP Basic authentication.
+.br
+Default: \fIyes\fP
+.TP
+\fBhttp_auth_spnego\fP
+Enable HTTP Negotiate authentication.
+.br
+Default: \fIno\fP
+.TP
+\fBhttp_auth_times\fP
+The number of login tries a user is allowed before the account is blocked.
+.br
+Default: \fI10\fP
+.TP
+\fBhttp_certificate_passwd\fP
+The password to unlock TLS certificates.
+.br
+Default: (unset)
+.TP
+\fBhttp_certificate_path\fP
+A colon-separated list of TLS certificate files. The complete certificate chain
+should be present (as there is no other config directive to pull CA certs in,
+and implicit loading from system directories is not guaranteed by Gromox).
+.br
+Default: (unset)
+.TP
+\fBhttp_conn_timeout\fP
+If a HTTP connection is inactive for the given period, the connection is
+terminated.
+.br
+Default: \fI3 minutes\fP
+.TP
+\fBhttp_debug\fP
+If set to \fB1\fP, prints all incoming and outgoing HTTP traffic to stderr (not
+http_log_file!).
+.br
+Default: \fI0\fP
+.TP
+\fBhttp_enforce_auth\fP
+Enforce authentication at all times. This is a debugging knob.
+.br
+Default: \fIno\fP
+.TP
+\fBhttp_krb_service_principal\fP
+Kerberos service principal to use when gss_program=internal-gss. The form is
+often something like \fIHTTP\fP\fB/\fP\fIfqdn\fP\fB@\fP\fIREALM\fP, but may
+vary. When using an external GSS authentication helper,
+http_krb_service_principal has no effect, and any principal you want to use
+needs to be passed via the \fBgss_program\fP directive in some way.
+be
+.br
+Default: (empty)
+.TP
+\fBhttp_listen_addr\fP
+Deprecated in favor of gromox.cfg:http_listen / gromox.cfg:http_listen_tls.
+.TP
+\fBhttp_listen_port\fP
+Deprecated in favor of gromox.cfg:http_listen.
+.TP
+\fBhttp_listen_tls_port\fP
+Deprecated in favor of gromox.cfg:http_listen_tls.
+.TP
+\fBhttp_log_file\fP
+Target for log messages here. Special values: "\fI-\fP" (stderr/syslog
+depending on parent PID) or "\fIsyslog\fP" are recognized.
+.br
+Default: \fI-\fP (auto)
+.TP
+\fBhttp_log_level\fP
+Maximum verbosity of logging. 1=crit, 2=error, 3=warn, 4=notice, 5=info, 6=debug.
+.br
+Default: \fI4\fP (notice)
+.TP
+\fBhttp_private_key_path\fP
+A colon-separated list of TLS certificate private key files.
+.br
+Default: (unset)
+.TP
+\fBhttp_rqbody_flush_size\fP
+If the HTTP request to a CGI endpoint has a HTTP body larger than the limit
+given here, the data is buffered in a file rather than kept in memory. If the
+request uses Chunked Transfer Encoding, a file is used unconditionally.
+.br
+Default: \fI512K\fP
+.TP
+\fBhttp_rqbody_max_size\fP
+If the Content-Length of a HTTP request to a CGI endpoint is larger than this
+value, the request is rejected.
+.br
+Default: \fI50M\fP
+.TP
+\fBhttp_support_tls\fP
+This flag controls whether (or not) the server offers TLS at all. The default
+is false because you need a certificate for this first.
+.br
+Default: \fIfalse\fP
+.TP
+\fBhttp_thread_charge_num\fP
+Connection load factor (oversubscription ratio) for a processing thread.
+.br
+Default: \fI20\fP
+.TP
+\fBhttp_thread_init_num\fP
+The initial and also minimum number of client processing threads to keep
+around. This is similar to php-fpm's start_servers/min_spare_servere. (The
+maximum number of threads, i.e. what would be max_spare_servers, is determined
+by: context_num divided by http_thread_charge_num)
+.br
+Default: \fI5\fP
+.TP
+\fBmsrpc_debug\fP
+Log every completed RPC call and the return code of the operation in a minimal
+fashion to stderr. Level 1 emits RPCs with a failure return code, level 2 emits
+all RPCs. Note the daemon log level needs to be "debug" (6), too.
+.br
+Default: \fI0\fP
+.TP
+\fBrequest_max_mem\fP
+The maximum hint size for fragmented RPC PDU requests that will be allowed
+(C706 \(sc12.6.3.7, MS-RPCE v33 \(sc2.2.2.6).
+.br
+Default: \fI4M\fP
+.TP
+\fBtls_min_proto\fP
+The lowest TLS version to offer. Possible values are: \fBtls1.0\fP,
+\fBtls1.1\fP, \fBtls1.2\fP, and, if supported by the system, \fBtls1.3\fP.
+.br
+Default: \fItls1.2\fP
+.TP
+\fBrunning_identity\fP
+An unprivileged user account to switch the process to after startup.
+To inhibit the switch, assign the empty value.
+.br
+Default: \fIgromox\fP
+.TP
+\fBuser_default_lang\fP
+Default: \fIen\fP
+.SH Signals
+Upon receipt of SIGHUP, configuration files are re-read, but only a few select
+directives can be changed this way, as many parts do not implement reload.
+.PP
+Upon receipt of SIGUSR1, a dump of the currently active HTTP connections will
+be printed to stderr.
+.SH Normative references
+.IP \(bu 4
+MS-RPCE: Remote Procedure Call Protocol Extensions
+.IP \(bu 4
+DCERPC / C706: Technical Standard DCE 1.1: Remote Procedure Call by The Open
+Group, 1997
+.SH See also
+\fBgromox\fP(7), \fBmod_cache\fP(4gx), \fBmod_fastcgi\fP(4gx),
+\fBmod_rewrite\fP(4gx)

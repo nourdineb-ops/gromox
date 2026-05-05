@@ -1,0 +1,54 @@
+#pragma once
+#include <string>
+#include <utility>
+#include <vector>
+#include <gromox/common_types.hpp>
+#include <gromox/defs.h>
+#include <gromox/mapierr.hpp>
+
+struct GX_EXPORT vcard_param {
+	vcard_param(const char *n) __attribute__((nonnull(2))) : m_name(n) {}
+	void append_paramval(const char *s) __attribute__((nonnull(2))) { m_paramvals.emplace_back(s); }
+	inline const char *name() const { return m_name.c_str(); }
+	inline const std::string &name_s() const { return m_name; }
+
+	std::string m_name;
+	std::vector<std::string> m_paramvals;
+};
+
+struct GX_EXPORT vcard_value {
+	void append_subval(const char *s) { m_subvals.emplace_back(gromox::znul(s)); }
+	void append_subval(std::string &&s) { m_subvals.emplace_back(std::move(s)); }
+	std::vector<std::string> m_subvals;
+};
+
+struct GX_EXPORT vcard_line {
+	vcard_line(const char *n) __attribute__((nonnull(2))) : m_name(n) {}
+	inline vcard_param &append_param(vcard_param &&o) { m_params.push_back(std::move(o)); return m_params.back(); }
+	vcard_param &append_param(const char *p, const char *pv) __attribute__((nonnull(2,3)));
+	inline vcard_value &append_value(vcard_value &&o) { m_values.push_back(std::move(o)); return m_values.back(); }
+	inline vcard_value &append_value() { return m_values.emplace_back(); }
+	vcard_value &append_value(const char *);
+	vcard_value &append_value(std::string &&);
+	const char *get_first_subval() const;
+	inline const char *name() const { return m_name.c_str(); }
+	inline const std::string &name_s() const { return m_name; }
+
+	std::string m_name;
+	std::vector<vcard_param> m_params;
+	std::vector<vcard_value> m_values;
+	unsigned int m_lnum = 0;
+};
+
+struct GX_EXPORT vcard {
+	inline void clear() { m_lines.clear(); }
+	ec_error_t load_single_from_str_move(char *in_buff);
+	bool serialize(std::string &out) const;
+	vcard_line &append_line(vcard_line &&o);
+	vcard_line &append_line(const char *) __attribute__((nonnull(2)));
+	vcard_line &append_line(const char *, const char *) __attribute__((nonnull(2)));
+
+	std::vector<vcard_line> m_lines;
+};
+
+extern GX_EXPORT ec_error_t vcard_load_multi_from_str_move(char *input, std::vector<vcard> &, size_t limit = 0);

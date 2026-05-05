@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later WITH linking exception
+// SPDX-FileCopyrightText: 2024–2026 grommunio GmbH
+// This file is part of Gromox.
+#ifdef HAVE_CONFIG_H
+#	include "config.h"
+#endif
+#define PAM_SM_AUTH 1
+#include <cstring>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <typeinfo>
+#include <utility>
+#include <vector>
+#include <libHX/misc.h>
+#include <libHX/scope.hpp>
+#include <security/pam_appl.h>
+#include <security/pam_modules.h>
+#include <gromox/authmgr.hpp>
+#include <gromox/config_file.hpp>
+#include <gromox/defs.h>
+#include <gromox/fileio.h>
+#include <gromox/paths.h>
+#include <gromox/svc_loader.hpp>
+#include <gromox/tie.hpp>
+#include <gromox/util.hpp>
+#ifndef PAM_EXTERN
+#	define PAM_EXTERN
+#endif
+
+using namespace gromox;
+
+static std::mutex g_svc_once;
+static constexpr generic_module g_dfl_svc_plugins[] = {
+	{"libgromox_auth.so/mgr", SVC_authmgr},
+};
+
+static int converse(pam_handle_t *pamh, int nargs,
+    const struct pam_message **message, struct pam_response **resp)
+{
+	*resp = nullptr;
+	struct pam_conv *conv;
+	auto ret = pam_get_item(pamh, PAM_CONV, const_cast<const void **>(reinterpret_cast<void **>(&conv)));
+
+	if (ret == PAM_SUCCESS && conv != nullptr && conv->conv != nullptr)
+		ret = conv->conv(nargs, message, resp, conv->appdata_ptr);
+	if (*resp == nullptr || (*resp)->resp == nullptr)
+		ret = PAM_AUTH_ERR;
+	return ret;
+}
+
+static int read_password(pam_handle_t *pamh, const char *prompt, char **pass)
+{
+	struct pam_message msg;
+	const struct pam_message *pmsg = &msg;
+	struct pam_response *resp = nullptr;
+
+	*pass = nullptr;
+	msg.msg_style = PAM_PROMPT_ECHO_OFF;
+	msg.msg = deconst(prompt != nullptr ? prompt : "Password: ");
+	auto ret = converse(pamh, 1, &pmsg, &resp);
+	if (ret == PAM_SUCCESS)
+		*pass = strdup(resp->resp);
+	return ret;
+}
+
+PAM_EXTERN GX_EXPORT int pam_sm_authenticate(pam_handle_t *pamh, int flags,
+    int argc, const char **argv)
+{
+	auto cfg = config_file_prg(nullptr, "pam.cfg", nullptr);
+	if (cfg == nullptr)
+		return PAM_AUTH_ERR;
+
+	const char *service = nullptr, *username = nullptr;
+	for (int i = 0; i < argc; ++i)
+		if (strncmp(argv[i], "service=", 8) == 0)
+			service = argv[i] + 8;
+	auto ret = pam_get_user(pamh, &username, nullptr);
+	if (ret != PAM_SUCCESS || username == nullptr)
+		return PAM_AUTH_ERR;
+
+	const void *authtok_v = nullptr;
+	ret = pam_get_item(pamh, PAM_AUTHTOK, &authtok_v);
+	if (ret != PAM_SUCCESS)
+		return PAM_AUTH_ERR;
+	std::unique_ptr<char[], stdlib_delete> authtok;
+	if (authtok_v != nullptr) {
+		authtok.reset(strdup(static_cast<const char *>(authtok_v)));
+	} else {
+		ret = read_password(pamh, cfg->get_value("pam_prompt"), &unique_tie(authtok));
+		if (ret != PAM_SUCCESS)
+			return ret;
+	}
+
+	const char *val = cfg->get_value("config_file_path");
+	if (val == nullptr)
+		cfg->set_value("config_file_path", PKGSYSCONFDIR "/pam:" PKGSYSCONFDIR);
+
+	std::lock_guard<std::mutex> holder(g_svc_once);
+	service_init({std::move(cfg), g_dfl_svc_plugins, 1});
+	if (service_run() != 0)
+		return PAM_AUTH_ERR;
+	auto cleanup_1 = HX::make_scope_exit(service_stop);
+
+	unsigned int wantpriv = 0;
+	if (service == nullptr || strcmp(service, "smtp") == 0)
+		wantpriv |= USER_PRIVILEGE_SMTP;
+	else if (strcmp(service, "imap") == 0 || strcmp(service, "pop3") == 0)
+		wantpriv |= USER_PRIVILEGE_IMAP;
+	else if (strcmp(service, "exch") == 0)
+		/* nothing needed */;
+	else if (strcmp(service, "chat") == 0)
+		wantpriv |= USER_PRIVILEGE_CHAT;
+	else if (strcmp(service, "video") == 0)
+		wantpriv |= USER_PRIVILEGE_VIDEO;
+	else if (strcmp(service, "files") == 0)
+		wantpriv |= USER_PRIVILEGE_FILES;
+	else if (strcmp(service, "archive") == 0)
+		wantpriv |= USER_PRIVILEGE_ARCHIVE;
+
+	authmgr_login_t fptr_login;
+	fptr_login = reinterpret_cast<authmgr_login_t>(service_query("auth_login_gen",
+	             "system", typeid(decltype(*fptr_login))));
+	if (fptr_login == nullptr)
+		return PAM_AUTH_ERR;
+	sql_meta_result mres;
+	ret = fptr_login(username, authtok.get(), wantpriv, mres) ? PAM_SUCCESS : PAM_AUTH_ERR;
+	service_release("auth_login_gen", "system");
+	return ret;
+}
+
+PAM_EXTERN GX_EXPORT int pam_sm_setcred(pam_handle_t *pamh, int flags,
+    int argc, const char **argv)
+{
+	return PAM_SUCCESS;
+}

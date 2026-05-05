@@ -1,0 +1,476 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2025 grommunio GmbH
+.TH gromox 7 "" "Gromox" "Gromox admin reference"
+.SH Name
+gromox \(em Overview of the Gromox groupware server
+.SH Description
+Gromox is a groupware server capable of serving as a replacement for Microsoft
+Exchange. Connectivity options include RPC/HTTP (Outlook Anywhere),
+IMAP, POP3, an SMTP-speaking LDA, and a PHP module with a Z-MAPI function
+subset.
+.PP
+Gromox relies on other components to provide a sensibly complete mail system,
+such as Postfix as a mail transfer agent, and grommunio-admin for user management.
+A web interface is available with grommunio-web. The grommunio distribution ships
+these essentials and has a ready-to-run installation of Gromox. system.
+.SH Manual page listing
+Gromox documentation consists of at least a dozen manual pages ("manpages") on
+its individual components. We have grouped these according to their principal
+function.
+.SS Overview and definitions
+.IP \(bu 4
+gromox(7) \(em This page, an overview of the Gromox groupware server.
+.IP \(bu 4
+mapi(7gx) \(em Definition for "Messaging Application Programming Interface"
+.IP \(bu 4
+gromox\-selinux(5) \(em SELinux policy for Gromox
+.SS Information Store subsystem
+.IP \(bu 4
+autoconfig(7) \(em AutoConfig protocols
+.IP \(bu 4
+autodiscover(4gx) \(em AutoDiscover HTTP Service Protocol handler (responder).
+.IP \(bu 4
+autodiscover(7) \(em AutoDiscover protocols
+.IP \(bu 4
+exmdb_provider(4gx) \(em Gromox Information Store
+.IP \(bu 4
+http(8gx) \(em Protocol handler for HTTP and RPCH
+.IP \(bu 4
+istore(8gx) \(em Information Store launcher
+.IP \(bu 4
+mod_cache(4gx) \(em Handler for serving objects from a
+local filesystem
+.IP \(bu 4
+mod_fastcgi(4gx) \(em Handler for proxying requests to
+FastCGI servers
+.IP \(bu 4
+mod_rewrite(4gx) \(em Handler for altering HTTP request
+URIs before processing
+.IP \(bu 4
+timer(8gx) \(em deferred command executor
+.SS Exchange subsystem and its components
+.IP \(bu 4
+exchange_emsmdb(4gx) \(em Handler for the Wire Format
+Protocol (Outlook/Exchange RPCs) and Remote Operations Protocol
+.IP \(bu 4
+exchange_nsp(4gx) \(em Handler for the Name
+Service Provider Interface Protocol
+.IP \(bu 4
+exchange_rfr(4gx) \(em Handler for the Address Book Name
+Service Provider Interface Referral Protocol
+.IP \(bu 4
+ews(4gx) \(em Handler for Exchange Web Services requests
+.IP \(bu 4
+mh_emsmdb(4gx) \(em Handler for MAPIHTTP-wrapped EMSMDB
+requests
+.IP \(bu 4
+mh_nsp(4gx) \(em Handler for MAPIHTTP-wrapped NSPI requests
+.SS PHP-MAPI subsystem
+.IP \(bu 4
+zcore(8gx) \(em Bridge for PHP-MAPI requests
+.SS Mail retrieval agent subsystem (MRA)
+.IP \(bu 4
+imap(8gx) \(em IMAP server
+.IP \(bu 4
+event_proxy(4gx) \(em Event sender
+.IP \(bu 4
+event_stub(4gx) \(em Event receiver
+.IP \(bu 4
+midb_agent(4gx) \(em Client for midb(8gx)
+.IP \(bu 4
+pop3(8gx) \(em POP3 server
+.SS Local delivery agent (LDA)
+.IP \(bu 4
+alias_resolve(4gx) \(em Alias resolution for delivery(8gx) using MySQL
+.IP \(bu 4
+delivery(8gx) \(em Backend for local delivery
+.IP \(bu 4
+delivery-queue(8gx) \(em LMTP/SMTP frontend for local delivery
+.IP \(bu 4
+user_filter(4gx) \(em User logon limiter
+.SS Auxiliary services
+.IP \(bu 4
+gromox\-cleaner.service(8) \(em Soft-deleted message/attachment removal
+.IP \(bu 4
+pam_gromox(4gx) \(em a PAM plugin to authenticate with Gromox
+.IP \(bu 4
+event(8gx) \(em Folder change notification daemon
+.IP \(bu 4
+midb(8gx) \(em Message Index database daemon
+.SS System administration
+.IP \(bu 4
+gromox\-abktconv(8) \(em Utility for converting between ABKT and JSON
+.IP \(bu 4
+gromox\-abktpull(8) \(em Utility to extract ABKT templates from LDIF
+.IP \(bu 4
+gromox\-compress(8) \(em Utility to recompress Gromox content files
+.IP \(bu 4
+gromox\-dbop(8) \(em User database maintenance utility
+.IP \(bu 4
+gromox\-dscli(8) \(em Autodiscover command line utility
+.IP \(bu 4
+gromox\-mailq(8) \(em SMTP queue lister
+.IP \(bu 4
+gromox\-mbck(8) \(em Mailbox check and repair utility
+.IP \(bu 4
+gromox\-mbop(8) \(em Mailbox operations utility
+.IP \(bu 4
+gromox\-mbsize(8) \(em Mailbox size analysis
+.IP \(bu 4
+gromox\-mkmidb(8) \(em Tool for creating a blank message index database
+.IP \(bu 4
+gromox\-mkprivate(8) \(em Tool for creating a blank private store
+.IP \(bu 4
+gromox\-mkpublic(8) \(em Tool for creating a blank public store
+.SS Mail import, export and conversion
+.IP \(bu 4
+gromox\-eml2mbox(8) \(em Utility for converting RFC5322 Internet Mail messages
+into a RFC4155 mbox-format mailbox
+.IP \(bu 4
+gromox\-import(8) \(em Utility for analysis of/importing messages from a Gromox
+Message Transfer datastream
+.IP \(bu 4
+gromox\-export(8) \(em Utility for exporting messages
+.IP \(bu 4
+gromox\-exm2eml(8) \(em Wrapper for gromox\-export selecting RFC5322 Internet
+Mail output
+.IP \(bu 4
+gromox\-exm2ical(8) \(em Wrapper for gromox\-export selecting RFC5545 iCalendar
+output
+.IP \(bu 4
+gromox\-exm2mt(8) \(em Wrapper for gromox\-export selecting Gromox Mailbox
+Transfer stream output
+.IP \(bu 4
+gromox\-exm2tnef(8) \(em Wrapper for gromox\-export selecting TNEF output
+.IP \(bu 4
+gromox\-exm2vcf(8) \(em Wrapper for gromox\-export selecting RFC6540 vCard
+output
+.IP \(bu 4
+gromox\-ical2mt(8) \(em Utility for analysis of/importing RFC5545 iCalendar
+objects
+.IP \(bu 4
+gromox\-kdb2mt(8) \(em Utility for analysis of/importing Zarafa/Kopano
+SQL-stored mailboxes
+.IP \(bu 4
+gromox\-oxm2mt(8) \(em Utility for analysis and import of Outlook .msg files
+.IP \(bu 4
+gromox\-pff2mt(8) \(em Utility for analysis/import of PFF/PST/OST files
+.IP \(bu 4
+gromox\-snapshot(8) \(em Helper to create btrfs snapshots of mailboxes
+.IP \(bu 4
+gromox\-tnef2mt(8) \(em Utility for analysis/import of MS-OXTNEF objects
+.IP \(bu 4
+gromox\-vcf2mt(8) \(em Utility for analysis/import of vCard objects
+.IP \(bu 4
+kdb\-uidextract(8) \(em Helper for creating a gromox\-kdb2mt ACL map
+.IP \(bu 4
+kdb\-uidextract\-limited(8) \(em Helper for creating a gromox\-kdb2mt ACL map
+.SS Components
+.IP \(bu 4
+authmgr(4gx) \(em Demultiplexer for authentication requests
+.IP \(bu 4
+dnsbl_filter(4gx) \(em DNS Blacklist filtering
+.IP \(bu 4
+ldap_adaptor(4gx) \(em LDAP connector for authentication
+.IP \(bu 4
+mysql_adaptor(4gx) \(em MySQL/MariaDB connector for user metadata and
+authentication
+.IP \(bu 4
+timer_agent(4gx) \(em Client for timer(8gx)
+.SS Historic commands that have been removed
+The following is a list of programs that no longer exist. It is intended solely
+to capture keyword searches within the documentation for said obsolete/removed commands.
+.IP \(bu 4
+gromox\-mt2exm: renamed to gromox\-import
+.SS Language bindings
+.IP \(bu 4
+mapi(4gx) \(em PHP module providing MAPI functions
+.SH Configuration files
+Program configuration files reside within /etc/gromox. The format for .cfg
+files is: one "key=value" pair per line. Empty lines are ignored, as are lines
+beginning with a '#' character. Lines can have a maximum length of 1024. Each
+key=value line is logically split at the equals sign, and whitespace is trimmed
+around key and value. Comments at the end of a value are not supported. Escape
+sequences are not supported.
+.PP
+The format for .ini files is: one "key=value" pair per line. Empty lines are
+ignored, as are lines beginning with a ';' character.
+.PP
+Many programs have a \fBconfig_file_path\fP directive with which the search
+path for further config files can be specified. For example, http(8gx) defaults
+to config_file_path=/etc/gromox/http:/etc/gromox, so the mysql_adaptor(4gx)
+component as loaded by http will first try
+/etc/gromox/http/mysql_adaptor.cfg, then /etc/gromox/mysql_adaptor.cfg. This
+allows having one file that is shared between multiple programs as well as
+being able to override on a per program-basis.
+.SS Listing of config files per component
+A list of components and the config files they potentially use.
+.IP \(bu 4
+alias_resolve(4gx) inside delivery(8gx): /etc/gromox/alias_resolve.cfg,
+/etc/gromox/mysql_adaptor.cfg
+.IP \(bu 4
+authmgr(4gx) inside delivery(8gx), delivery-queue(8gx), http(8gx), imap(8gx),
+midb(8gx), pam_gromox(4gx), pop3(8gx), zcore(8gx): /etc/gromox/authmgr.cfg
+.IP \(bu 4
+autodiscover(4gx) inside php-fpm(8): /etc/gromox/autodiscover.ini,
+/etc/gromox/mysql_adaptor.cfg
+.IP \(bu 4
+delivery(8gx): /etc/gromox/alias_resolve.cfg, /etc/gromox/exmdb_local.cfg,
+/etc/gromox/ldap_adaptor.cfg,
+/etc/gromox/mlist_expand.cfg, /etc/gromox/mysql_adaptor.cfg
+.IP \(bu 4
+delivery-queue(8gx): /etc/gromox/authmgr.cfg,
+/etc/gromox/midb_agent.cfg, /etc/gromox/ldap_adaptor.cfg,
+/etc/gromox/mysql_adaptor.cfg
+.IP \(bu 4
+event(8gx): /etc/gromox/event.cfg
+.IP \(bu 4
+exchange_emsmdb(4gx) inside http(8gx): /etc/gromox/exchange_emsmdb.cfg
+.IP \(bu 4
+exchange_nsp(4gx) inside http(8gx): /etc/gromox/exchange_nsp.cfg
+.IP \(bu 4
+exchange_rfr(4gx) inside http(8gx): no config file
+.IP \(bu 4
+exmdb_provider(4gx) inside http(8gx): /etc/gromox/exmdb_provider.cfg
+.IP \(bu 4
+http(8gx): /etc/gromox/cache.txt, /etc/gromox/exchange_emsmdb.cfg,
+/etc/gromox/exchange_nsp.cfg, etc/gromox/exmdb_provider.cfg,
+/etc/gromox/fastcgi.txt, /etc/gromox/rewrite.txt
+.IP \(bu 4
+imap(8gx): /etc/gromox/authmgr.cfg, /etc/gromox/event_proxy.cfg,
+/etc/gromox/event_stub.cfg, /etc/gromox/imap.cfg, /etc/gromox/ldap_adaptor.cfg,
+/etc/gromox/mysql_adaptor.cfg
+.IP \(bu 4
+midb_agent(4gx) inside delivery-queue(8gx), imap(8gx), pop3(8gx):
+/etc/gromox/midb_agent.cfg
+.IP \(bu 4
+mlist_expand(4gx) inside delivery(8gx): /etc/gromox/mlist_expand.cfg
+.IP \(bu 4
+mod_cache(4gx) inside http(8gx): /etc/gromox/http.cfg, /etc/gromox/cache.txt
+.IP \(bu 4
+mod_fastcgi(4gx) inside http(8gx): /etc/gromox/http.cfg, /etc/gromox/fastcgi.txt
+.IP \(bu 4
+mod_rewrite(4gx) inside http(8gx): /etc/gromox/http.cfg, /etc/gromox/rewrite.txt
+.IP \(bu 4
+mh_emsmdb(4gx) inside http(8gx): no config file
+.IP \(bu 4
+mh_nsp(4gx) inside http(8gx): no config file
+.IP \(bu 4
+pop3(8gx): /etc/gromox/authmgr.cfg, /etc/gromox/event_proxy.cfg,
+/etc/gromox/imap.cfg, /etc/gromox/ldap_adaptor.cfg,
+/etc/gromox/mysql_adaptor.cfg
+.IP \(bu 4
+timer(8gx): /etc/gromox/timer.cfg
+.IP \(bu 4
+timer_agent(4gx) inside http(8gx), zcore(8gx): /etc/gromox/timer_agent.cfg
+.IP \(bu 4
+user_filter(4gx) inside http(8gx), imap(8gx), pop3(8gx): /etc/gromox/gromox.cfg
+.IP \(bu 4
+zcore(8gx): /etc/gromox/authmgr.cfg, /etc/gromox/zcore.cfg,
+/etc/gromox/ldap_adaptor.cfg,
+/etc/gromox/mysql_adaptor.cfg, /etc/gromox/timer_agent.cfg
+.SS Listing of components per config file
+.IP \(bu 4
+/etc/gromox/alias_resolve.cfg: used by the alias_resolve(4gx) component, accessed
+process-wise by the delivery(8gx) process.
+.IP \(bu 4
+/etc/gromox/authmgr.cfg: used by the authmgr(4gx) and pam_gromox(4gx) components,
+accessed process-wise by delivery(8gx), delivery-queue(8gx), http(8gx),
+imap(8gx), midb(8gx), pop3(8gx), zcore(8gx), and arbitrary PAM applications.
+.IP \(bu 4
+/etc/gromox/autodiscover.ini: used by the autodiscover(4gx) component, accessed
+process-wise by php-fpm(8).
+.IP \(bu 4
+/etc/gromox/event.cfg: used by the event(8gx) process.
+.IP \(bu 4
+/etc/gromox/event_proxy.cfg: used by the event_proxy(4gx) component, accessed
+process-wise by imap(8gx), midb(8gx), pop3(8gx).
+.IP \(bu 4
+/etc/gromox/event_stub.cfg: used by the event_stub(4gx) component, accessed
+process-wise by imap(8gx).
+.IP \(bu 4
+/etc/gromox/exchange_emsmdb.cfg: used by the exchange_emsmdb(4gx) component,
+accessed process-wise by http(8gx).
+.IP \(bu 4
+/etc/gromox/exchange_nsp.cfg: used by the exchange_nsp(4gx) component, accessed
+process-wise by http(8gx).
+.IP \(bu 4
+/etc/gromox/exmdb_local.cfg: used by the exmdb_local(4gx) component, accessed
+process-wise by delivery(8gx).
+.IP \(bu 4
+/etc/gromox/exmdb_provider.cfg: used by the exmdb_provider(4gx) component,
+accessed process-wise by http(8gx).
+.IP \(bu 4
+/etc/gromox/gromox.cfg: An effort to consolidate all the invididual .cfg
+files you see around here. This is a work-in-progress. See the gromox.cfg(5)
+manpage.
+.IP \(bu 4
+/etc/gromox/http.cfg: used by the mod_cache(4gx), mod_fastcgi(4gx),
+mod_rewrite(4gx) components, and the http(8gx) process.
+.IP \(bu 4
+/etc/gromox/imap.cfg: used by the imap(8gx) process.
+.IP \(bu 4
+/etc/gromox/ldap_adaptor.cfg: used by the ldap_adaptor(4gx) component, accessed
+process-wise by delivery(8gx), delivery-queue(8gx), http(8gx), imap(8gx),
+midb(8gx), pop3(8gx), zcore(8gx), and arbitrary PAM applications.
+.IP \(bu 4
+/etc/gromox/midb_agent.cfg: used by the midb_agent(4gx) component, accessed
+process-wise by delivery-queue(8gx), imap(8gx), pop3(8gx).
+.IP \(bu 4
+/etc/gromox/mlist_expand.cfg: used by the mlist_expand(4gx) component,
+accessed process-wise by delivery(8gx).
+.IP \(bu 4
+/etc/gromox/mysql_adaptor.cfg: used by the alias_resolve(4gx),
+mysql_adaptor(4gx) components, accessed process-wise by delivery(8gx),
+delivery-queue(8gx), http(8gx), imap(8gx), midb(8gx), pop3(8gx), zcore(8gx),
+and arbitrary PAM applications.
+.IP \(bu 4
+/etc/gromox/midb.cfg: used by the midb(8gx) process.
+.IP \(bu 4
+/etc/gromox/mod_cache.txt: used by the mod_cache(4gx) component, accessed
+process-wise by http(8gx).
+.IP \(bu 4
+/etc/gromox/mod_fastcgi.txt: used by the mod_fastcgi(4gx) component, accessed
+process-wise by http(8gx).
+.IP \(bu 4
+/etc/gromox/mod_rewrite.txt: used by the mod_rewrite(4gx) component, accessed
+process-wise by http(8gx).
+.IP \(bu 4
+/etc/gromox/mysql_adaptor.cfg: used by the autodiscover(4gx) component, http(8gx),
+imap(8gx), pop3(8gx), zcore(8gx) processes.
+.IP \(bu 4
+/etc/gromox/pam.cfg: used by the pam_gromox(4gx) component, accessed process-wise
+by arbitrary PAM applications.
+.IP \(bu 4
+/etc/gromox/pop3.cfg: used by the pop3(8gx) process.
+.IP \(bu 4
+/etc/gromox/timer.cfg: used by the timer(8gx) process.
+.IP \(bu 4
+/etc/gromox/timer_agent.cfg: used by the timer_agent(4gx) component, accessed
+process-wise by http(8gx), zcore(8gx).
+.IP \(bu 4
+/etc/gromox/zcore.cfg: used by the zcore(8gx) process.
+.SH Databases
+.IP \(bu 4
+User information is held in a MariaDB/MySQL database. This database can be
+accessed by multiple Gromox servers, and so enables distributed Gromox
+operation. The MariaDB system itself provides the necessary utilities for
+distributing or replicating this database.
+.IP \(bu 4
+Per-user e-mail messages are stored in a SQLite database (e.g.
+/var/lib/gromox/user/m1/1/1/exchange.sqlite3), as is a message index (e.g.
+/var/lib/gromox/user/m1/1/1/midb.sqlite3). These are normally only used by one
+system, but can be shared through network filesystems provided that file
+locking is properly implemented in the filesystem driver. Normal file
+mechanisms can be used to backup or transfer the database to another Gromox
+host.
+.SH Host addresses
+Gromox exclusively uses the AF_INET6 socket family with the Berkeley/BSD/POSIX
+socket API. What this means is that, whenever an IP address is logged, it will
+have the form specified in RFC 4291 \(sc2.2/\(sc2.5.5. Furthermore, whenever some
+configuration file directive (field) requires an IP address (i.e. you cannot or
+do not want to use a hostname), the RFC 4291 form \fBmust\fP be used for both
+IPv6 and IPv4.
+.SH Listening sockets
+.IP \(bu 4
+/run/gromox/zcore.sock \(em zcore(8gx)
+.IP \(bu 4
+*:24 \(em delivery-queue(8gx) LMTP/SMTP service (when Postfix is on 25)
+.IP \(bu 4
+:*25 \(em Normally, your own MTA (postfix(1), exim(8), whatever the case may
+be). delivery-queue(8gx) will only be on 25 in developer setups that wish to
+cut and skip Postfix/etc. to get a simpler test setup.
+.IP \(bu 4
+*:80 \(em http(8gx) HTTP service
+.IP \(bu 4
+*:110 \(em pop3(8gx) POP3 service
+.IP \(bu 4
+*:143 \(em imap(8gx) IMAP service
+.IP \(bu 4
+*:443 \(em http(8gx) HTTP over implicit TLS
+.IP \(bu 4
+*:993 \(em imap(8gx) IMAP over implicit TLS
+.IP \(bu 4
+*:995 \(em pop3(8gx) POP3 over implicit TLS
+.IP \(bu 4
+[::1]:5000 \(em exmdb_provider(4gx) component inside http(8gx)
+.IP \(bu 4
+[::1]:5555 \(em midb(8gx) service
+.IP \(bu 4
+[::1]:6666 \(em timer(8gx) service
+.IP \(bu 4
+[::1]:33333 \(em event(8gx) service
+.SH Files
+.IP \(bu 4
+/usr/share/gromox/cpid.txt: mapping between character set IDs and names
+.IP \(bu 4
+/usr/share/gromox/folder_names.txt: Translations for essential folders in a
+message store.
+.IP \(bu 4
+/usr/share/gromox/lang_charset.txt: mapping from language code to character
+set
+.IP \(bu 4
+/usr/share/gromox/lcid.txt: mapping between locale IDs and names
+.IP \(bu 4
+/usr/share/gromox/mime_extension.txt: mapping between file extensiosn and
+MIME types
+.IP \(bu 4
+/var/lib/gromox: basic root directory of all variadic data for Gromox
+.IP \(bu 4
+/var/lib/gromox/queue: directory for delivery-queue(8) temporary files
+.IP \(bu 4
+/var/lib/gromox/user/account@domain: individual mailbox container
+.br
+The directory name/path has only few requirements. The users.maildir column in
+the gromox MariaDB/MySQL database needs to reflect that location. Some user
+management tools generate extra directory levels, e.g. /user/m1/1/0.
+.IP \(bu 4
+\&.../a@d/exmdb/exchange.sqlite3: mail store with almost everything (no mail bodies)
+.IP \(bu 4
+\&.../a@d/cid/: attachments and message bodies (PR_BODY, PR_HTML, PR_RTF_COMPRESSED).
+.IP \(bu 4
+\&.../a@d/eml/\fImid_string\fP: RFC5322 representation for a message.
+.br
+mid_string has no required form. Typically, there is
+\fItimestamp\fP.\fIseqid\fP.\fIhostname\fP which represents EMLs captured by
+delivery(8gx) on ingestion, and \fItimestamp\fP.\fIseqid\fP.midb for EMLs
+generated by midb(8gx) out of MAPI messages.
+.IP \(bu 4
+\&.../a@d/ext/\fImid_string\fP: Digest for the RFC5322 file.
+.br
+This JSON-encoded file contains e.g. indexing information for individual MIME
+parts of the RFC5322 representation. Generated by midb(8gx).
+.SH fail2ban integration
+Daemons emit a mostly consistent log messages on authentication failures that
+can be matched with (PCRE):
+.PP
+/rhost=\\[(\\S+)?\\]\\S* user=(\\S+) .*(auth|login.*|logon) rejected:/
+.PP
+Operation texts can be "HTTP auth rejected" (http), "zs_logon rejected"
+(zcore), "zs_logon_token rejected" (zcore), "LOGIN phase0 rejected" (imap),
+"LOGIN phase1 rejected" (imap), "LOGIN phase2 rejeceted" (imap), "login
+rejected" (pop3).
+.SH Duration specifications
+Duration strings must be of the form:
+.PP
+duration := quantum [ quantum ]*
+.PP
+quantum := number unit
+.PP
+# "number" can be whatever strtol(3) accepts. If a period is detected, parsing
+switches to strtod(3).
+.PP
+unit := "ns" | "nsec" | "µs" | "µsec" | "ms" | "msec" | "s" | "sec" | "second"
+| "seconds" | "min" | "minute" | "minutes" | "h" | "hour" | "hours" | "d" |
+"day" | "days" | "week" | "weeks" | "month" | "months" | "y" | "year" | "years"
+.PP
+Whitespace is ignored whereever it appears (so use as much as you need). Quanta
+with the same unit may be used; they are simply added together. Per this
+syntax, numbers can be positive or negative, integral or fractional (be mindful
+of precision limits of computers' floating-point math).
+.PP
+Examples: \fI1d1h1m1s\fP, \fI3.5 hours\fP, \fI1 hour 1 hour\fP (2 hours),
+\fI1 hour 60 minutes\fP (2 hours)
+.PP
+Note that Gromox may impose additional restrictions on specific configuration
+directives after the basic parse to enforce certain minimum and maximum values.

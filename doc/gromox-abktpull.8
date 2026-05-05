@@ -1,0 +1,21 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2021 grommunio GmbH
+.TH gromox\-abktpull 8 "" "Gromox" "Gromox admin reference"
+.SH Name
+gromox\-abktpull \(em Utility to extract ABKT templates from LDIF
+.SH Synopsis
+.PP
+\fBldapsearch\fP \fI...\fP\fB | gromox\-abktpull\fP
+.SH Description
+.PP
+gromox\-abktpull reads LDIF from standard input and extracts the values from
+attributes matching /DisplayTable/\~\(em i.e. generally originalDisplayTable,
+originalDisplayTableMSDOS, addressEntryDisplayTable and
+addressEntryDisplayTableMSDOS\~\(em and saves them in separate files in the
+current working directory.
+.SH Normative references
+.IP \(bu 4
+RFC 2849: LDAP Data Interchange Format
+.SH See also
+.PP
+\fBgromox\fP(7), \fBgromox-abktconv\fP(8gx)

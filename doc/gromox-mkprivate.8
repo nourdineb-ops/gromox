@@ -1,0 +1,71 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2021-2022 grommunio GmbH
+.TH gromox\-mkprivate 8 "" "Gromox" "Gromox admin reference"
+.SH Name
+gromox\-mkprivate \(em Tool for creating a blank private store
+.SH Synopsis
+\fBgromox\-mkprivate\fP [\fB\-Uv\fP] [\fB\-T\fP \fItemplate_dir\fP] [\fB\-c\fP
+\fIconfig\fP] [\fB\-f\fP] \fIusername\fP
+.SH Description
+mkprivate is used to generate the exchange.sqlite3 file for a private store.
+mkprivate directly operates on the filesystem, which has implications. First,
+the program ought to be executed on the correct homeserver in case a
+multi-server Gromox installation is used. Second, there is no coordination with
+exmdb_provider(4gx), and exmdb_provider might continue using file descriptors
+opened earlier, working with the old copy of the mailbox, or get confused
+because e.g. a WAL file no longer matches the sqlite db. Ideally, you would use
+something like `gromox\-mbop \-u ... ( freeze ) ( unload )` to make
+exmdb_provider close the mailbox before resetting it. Even then, services that
+build on top of exmdb, such as exchange_emsmdb(4gx) or zcore(8gx), may also get
+confused when the mailbox (now as an abstract object rather than a concrete
+file descriptor) or any key characteristics like PR_STORE_RECORD_KEY.
+.SH Options
+.TP
+\fB\-T\fP \fIpath\fP
+This option can be used to override the built-in data path
+for folder name translations and prepoulated named properties.
+.br
+Default: \fI/usr/share/gromox\fP
+.TP
+\fB\-U\fP
+Rather than creating the SQLite file, upgrade it. (The \-f option has no
+effect.) mkprivate does not coordinate with exmdb_provider(4gx) and data
+corruption is possible if both try to edit the file at the same time. You
+should let exmdb_provider(4gx) do upgrades instead, via the
+"exmdb_schema_upgrades" directive, or at the very least, stop
+http(8gx)/exmdb_provider when using mkprivate \-U.
+.TP
+\fB\-c\fP \fIconfig\fP
+Read configuration directives from the given file. If this option is not
+specified, /etc/gromox/mysql_adaptor.cfg will be read for MySQL connection
+parameters if that file exists.
+.TP
+\fB\-f\fP
+Force overwrite when an existing SQLite database is detected for the user.
+By default, mkprivate will not touch exchange.sqlite3.
+.TP
+\fB\-v\fP
+Turn on verbose mode for \-U.
+.TP
+\fB\-\-create\-old\fP
+Create blank initial database using version 0. (This can be used for testing
+the upgrade procedure.)
+.TP
+\fB\-\-integrity\fP
+Perform SQLite integrity check, either standalone or, if \-U is also given,
+as part of an upgrade.
+.TP
+\fB\-?\fP
+Display option summary.
+.SH Files
+.IP \(bu 4
+\fIdata_file_path\fP/folder_names.txt: Translations for essential folders in a
+message store.
+.IP \(bu 4
+\fIdata_file_path\fP/propnames.txt: Initial set of named properties to add to
+the new private store.
+.IP \(bu 4
+\fI/var/lib/gromox/...\fP/exmdb/exchange.sqlite3: MAPI object database.
+.SH See also
+\fBgromox\fP(7), \fBgromox\-mkmidb\fP(8), \fBgromox\-mkpublic\fP(8),
+\fBmysql_adaptor\fP(4gx)

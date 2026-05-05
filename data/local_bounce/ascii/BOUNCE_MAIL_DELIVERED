@@ -1,0 +1,12 @@
+Subject: Mail has been delivered successfully
+
+Hi,
+  Your mail has been delivered to %(rcpt) successfully!
+
+Below is the original mail information:
+   Time:    %(time)
+   From:    %(from)
+   To:      %(rcpts)
+   Subject: %(subject)
+   Length:  %(length)
+

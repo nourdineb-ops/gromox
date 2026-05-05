@@ -1,0 +1,13 @@
+Subject: Delivery failure, mail system error!
+
+Hi,
+  I am sorry to tell you that some error occurred in our mail system,
+your message to "%(rcpt)" cannot be delivered, please contact our mail
+system administrator to settle this problem.
+
+Below is the original mail information:
+   Time:    %(time)
+   From:    %(from)
+   To:      %(rcpts)
+   Subject: %(subject)
+   Length:  %(length)

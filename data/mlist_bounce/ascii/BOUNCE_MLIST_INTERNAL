@@ -1,0 +1,15 @@
+Subject: Delivery failure, privilege not enough
+
+Hi,
+  You have not enough privilege to send mail to mail list %(rcpt),
+this mail list can only accept mails come from internal members.
+please contact the administrator for authorization. Thank you!
+
+Below is the original mail information:
+   Time:    %(time)
+   From:    %(from)
+   To:      %(rcpts)
+   Subject: %(subject)
+   Length:  %(length)
+	
+	

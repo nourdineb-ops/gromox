@@ -1,0 +1,11 @@
+Subject: Delivery failure, mail too large
+
+Hi,
+  Your message to "%(rcpt)" cannot be delivered properly because it's too large!
+
+Below is the original mail information:
+   Time:    %(time)
+   From:    %(from)
+   To:      %(rcpt)
+   Subject: %(subject)
+   Length:  %(length)

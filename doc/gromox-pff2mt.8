@@ -1,0 +1,87 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2021-2022 grommunio GmbH
+.TH gromox\-pff2mt 8 "" "Gromox" "Gromox admin reference"
+.SH Name
+gromox\-pff2mt \(em Utility for analysis/import of PFF/PST/OST files
+.SH Synopsis
+\fBgromox\-pff2mt\fP [\fB\-pst\fP] [...] \fIinput.pst\fP
+.SH Description
+gromox\-pff2mt reads a file that conforms to the Personal Folder File (PFF) and
+the Offline Folder File (OFF) format and re-exports the data in a
+Gromox-specific mailbox transfer format to stdout for consumption by pipe by
+the gromox\-import(8) program. Optionally, pff2mt can print a tree summary of
+the PFF. The PFF format is used in several file types:
+.IP \(bu 4
+PAB (Personal Address Book)
+.IP \(bu 4
+PST (Personal Storage Table)
+.IP \(bu 4
+OST (Offline Storage Table)
+.PP
+By default, pff2mt creates a new folder "Import of <xyz.pst> on <date>"
+within IPM_SUBTREE ("Top of Information Store") and places all PFF objects into
+that new subfolder.
+.PP
+Note that folders of non-default mailboxes are stored in a flat fashion in OST.
+A secretary.ost file with hierarchy like "(Boss)\\Inbox\\2021\\Invoices",
+"(Boss)\\Inbox\\2022\\Invoices" is flattened to "(Boss)\\Inbox",
+"(Boss)\\2021", "(Boss)\\Invoices", "Boss\\2022" and "(Boss)\\Invoices". The
+presence of \fBtwo\fP folders with the same name \fBat the same level\fP means
+gromox-import errors out when it tries to create a folder whose name already
+exists. This limits the usefulness of importing OST files.
+.SH Options
+.TP
+\fB\-p\fP
+Show properties in detail (enhances \fB\-t\fP).
+.TP
+\fB\-s\fP
+Splice objects from the PFF into existing folders. Specifically, the PFF root
+is mapped to the store root, and special folders (Sent Items, Deleted Items,
+etc.) are mapped to special folders in the store if the PFF has the necessary
+information. PST files have no such mapping hint for Inbox; only OST do. When
+\-\-with\-hidden is not selected, \-s will imply \-\-without\-hidden by default
+to avoid polluting e.g. "QuickStep settings" (which may already have settings).
+.TP
+\fB\-t\fP
+Show a diagnostic tree view of the source data as it is being read.
+.TP
+\fB\-\-loglevel\fP \fIn\fP Maximum verbosity of general logging (not connected
+to \fB\-p\fP, \fB\-t\fP or \fB\-v\fP). 1=crit, 2=error, 3=warn, 4=notice,
+5=info, 6=debug.
+.br
+Default: \fI4\fP (notice)
+.TP
+\fB\-\-with\-hidden\fP, \fB\-\-without\-hidden\fP
+This option controls the import of folders that have PR_ATTR_HIDDEN=1.
+.br
+Default: if \-s is present, import without hidden folders
+.TP
+\fB\-\-only\-obj\fP \fInid\fP
+Extract just the object with the given PFF node id. This option may be
+specified multiple times. The objects will be unanchored; see gromox\-import(8)
+for where messages are placed.
+.SH Examples
+Import of a PFF-compatible file into a Gromox mailbox via exmdb transport:
+.PP
+gromox\-pff2mt sample.pst | gromox\-import \-u user@domain.example
+.PP
+gromox-import has more target options; see its manpage.
+.SH Bugs
+Embedded messages are treated as subitems by libpff. Luckily, the only
+consequence is that the tree view (-t) shows duplicate NID visits.
+.PP
+.RS 4
+.nf
+\\_ [id=21cee4h ntyp=unknown-4h type=appointment nset=1 nent=161]
+    \\_ [id=8005h ntyp=atx type=attachment nset=1 nent=19]
+        \\_ [attachment type=i embedded_msg]
+            \\_ [id=21cf04h ntyp=unknown-4h type=appointment nset=1
+    \\_ [id=21cf04h ntyp=unknown-4h type=appointment nset=1 nent=50]
+    \\_ [id=8025h ntyp=atx type=attachment nset=1 nent=19]
+        \\_ [attachment type=i embedded_msg]
+            \\_ [id=21cf24h ntyp=unknown-4h type=appointment nset=1
+    \\_ [id=21cf24h ntyp=unknown-4h type=appointment nset=1 nent=49]
+.fi
+.RE
+.SH See also
+\fBgromox\fP(7), \fBgromox\-import\fP(8)

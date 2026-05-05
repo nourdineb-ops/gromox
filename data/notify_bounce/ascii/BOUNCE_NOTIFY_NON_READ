@@ -1,0 +1,12 @@
+Subject: Your message has been deleted!
+
+Hi,
+  Your message has not been displayed to "%(user)".
+
+Below is the original mail information:
+   Time:    %(time)
+   From:    %(from)
+   To:      %(rcpts)
+   Subject: %(subject)
+   Length:  %(length)
+	

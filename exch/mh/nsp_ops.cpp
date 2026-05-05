@@ -1,0 +1,863 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2021–2025 grommunio GmbH
+// This file is part of Gromox.
+#include <libHX/scope.hpp>
+#include <gromox/ext_buffer.hpp>
+#include <gromox/mapi_types.hpp>
+#include <gromox/mapidefs.h>
+#include "nsp_common.hpp"
+#include "nsp_ops.hpp"
+#define TRY(expr) do { pack_result klfdv{expr}; if (klfdv != pack_result::ok) return klfdv; } while (false)
+#define SCOPED_ABKFLAG(cls) \
+	auto saved_flags_X1 = (cls).m_flags; \
+	(cls).m_flags |= EXT_FLAG_ABK; \
+	auto cl_flag_X1 = HX::make_scope_exit([&]() { (cls).m_flags = saved_flags_X1; });
+#define SCOPED_ABK_DISABLE(cls) \
+	auto saved_flags_X2 = (cls).m_flags; \
+	(cls).m_flags &= ~EXT_FLAG_ABK; \
+	auto cl_flag_X2 = HX::make_scope_exit([&]() { (cls).m_flags = saved_flags_X2; });
+
+static pack_result nsp_ext_g_stat(nsp_ext_pull &ext, STAT &s)
+{
+	TRY(ext.g_uint32(&s.sort_type));
+	TRY(ext.g_uint32(&s.container_id));
+	TRY(ext.g_uint32(&s.cur_rec));
+	TRY(ext.g_int32(&s.delta));
+	TRY(ext.g_uint32(&s.num_pos));
+	TRY(ext.g_uint32(&s.total_rec));
+	TRY(ext.g_nlscp(&s.codepage));
+	TRY(ext.g_uint32(&s.template_locale));
+	return ext.g_uint32(&s.sort_locale);
+}
+
+static pack_result nsp_ext_g_propname(nsp_ext_pull &ext, nsp_propname2 *propname)
+{
+	TRY(ext.g_guid(&propname->guid));
+	return ext.g_uint32(&propname->id);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(bind_request &req)
+{
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&req.flags));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(unbind_request &req)
+{
+	uint32_t resv = 0;
+	TRY(g_uint32(&resv));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(comparemids_request &req)
+{
+	uint32_t resv = 0;
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&resv));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_uint32(&req.mid1));
+	TRY(g_uint32(&req.mid2));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(dntomid_request &req)
+{
+	uint32_t resv = 0;
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&resv));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.names.clear();
+	else
+		TRY(g_str_a(&req.names));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(getmatches_request &req)
+{
+	SCOPED_ABKFLAG(*this);
+	uint32_t resv = 0;
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&req.reserved1));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte != 0) {
+		auto inmids = anew<MID_ARRAY>();
+		if (inmids == nullptr)
+			return pack_result::alloc;
+		TRY(g_proptag_la(inmids));
+	}
+	TRY(g_uint32(&resv));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.filter = nullptr;
+	} else {
+		req.filter = anew<RESTRICTION>();
+		if (req.filter == nullptr)
+			return pack_result::alloc;
+		TRY(g_restriction(req.filter));
+	}
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.propname = nullptr;
+	} else {
+		req.propname = anew<nsp_propname2>();
+		if (req.propname == nullptr)
+			return pack_result::alloc;
+		TRY(nsp_ext_g_propname(*this, req.propname));
+	}
+	TRY(g_uint32(&req.row_count));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.columns.reset();
+	} else {
+		req.columns.emplace();
+		TRY(g_proptag_a(&*req.columns, 4));
+	}
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(getproplist_request &req)
+{
+	TRY(g_uint32(&req.flags));
+	TRY(g_uint32(&req.mid));
+	TRY(g_nlscp(&req.codepage));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(getprops_request &req)
+{
+	SCOPED_ABKFLAG(*this);
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&req.flags));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.proptags.reset();
+	} else {
+		req.proptags.emplace();
+		TRY(g_proptag_a(&*req.proptags, 4));
+	}
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(getspecialtable_request &req)
+{
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&req.flags));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.version = nullptr;
+	} else {
+		req.version = anew<uint32_t>();
+		if (req.version == nullptr)
+			return pack_result::alloc;
+		TRY(g_uint32(req.version));
+	}
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(gettemplateinfo_request &req)
+{
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&req.flags));
+	TRY(g_uint32(&req.type));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.dn = nullptr;
+	else
+		TRY(g_str(&req.dn));
+
+	TRY(g_nlscp(&req.codepage));
+	TRY(g_uint32(&req.locale_id));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(modlinkatt_request &req)
+{
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&req.flags));
+	TRY(g_uint32(&req.proptag));
+	TRY(g_uint32(&req.mid));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.entryids.count = 0;
+		req.entryids.pbin = nullptr;
+	} else {
+		TRY(g_bin_a(&req.entryids));
+	}
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(modprops_request &req)
+{
+	SCOPED_ABKFLAG(*this);
+	uint32_t resv = 0;
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&resv));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.proptags.reset();
+	} else {
+		req.proptags.emplace();
+		TRY(g_proptag_a(&*req.proptags, 4));
+	}
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.values = nullptr;
+	} else {
+		req.values = anew<LTPROPVAL_ARRAY>();
+		if (req.values == nullptr)
+			return pack_result::alloc;
+		TRY(g_tpropval_la(req.values));
+	}
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(queryrows_request &req)
+{
+	SCOPED_ABKFLAG(*this);
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&req.flags));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_proptag_a(&req.explicit_table, 4));
+	TRY(g_uint32(&req.count));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.columns.reset();
+	} else {
+		req.columns.emplace();
+		TRY(g_proptag_a(&*req.columns, 4));
+	}
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(querycolumns_request &req)
+{
+	uint32_t resv = 0;
+	TRY(g_uint32(&resv));
+	TRY(g_uint32(&req.flags));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(resolvenames_request &req)
+{
+	SCOPED_ABKFLAG(*this);
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&req.reserved));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.proptags.reset();
+	} else {
+		req.proptags.emplace();
+		TRY(g_proptag_a(&*req.proptags, 4));
+	}
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.names.clear();
+	} else {
+		SCOPED_ABK_DISABLE(*this);
+		TRY(g_wstr_a(&req.names));
+	}
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(resortrestriction_request &req)
+{
+	uint32_t resv = 0;
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&resv));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.inmids.clear();
+	else
+		TRY(g_proptag_a(&req.inmids, 4));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(seekentries_request &req)
+{
+	SCOPED_ABKFLAG(*this);
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&req.reserved));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.target = {};
+	else
+		TRY(g_tagged_pv(&req.target));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.explicit_table.reset();
+	} else {
+		req.explicit_table.emplace();
+		TRY(g_proptag_a(&*req.explicit_table, 4));
+	}
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0) {
+		req.columns.reset();
+	} else {
+		req.columns.emplace();
+		TRY(g_proptag_a(&*req.columns, 4));
+	}
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(updatestat_request &req)
+{
+	uint32_t resv = 0;
+	uint8_t tmp_byte;
+
+	TRY(g_uint32(&resv));
+	TRY(g_uint8(&tmp_byte));
+	if (tmp_byte == 0)
+		req.stat = {};
+	else
+		TRY(nsp_ext_g_stat(*this, req.stat));
+	TRY(g_uint8(&req.delta_requested));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(getmailboxurl_request &req)
+{
+	TRY(g_uint32(&req.flags));
+	TRY(g_wstr(&req.user_dn));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+pack_result nsp_ext_pull::g_nsp_request(getaddressbookurl_request &req)
+{
+	TRY(g_uint32(&req.flags));
+	TRY(g_wstr(&req.user_dn));
+	TRY(g_uint32(&req.cb_auxin));
+	if (req.cb_auxin == 0) {
+		req.auxin = nullptr;
+		return pack_result::ok;
+	}
+	req.auxin = static_cast<uint8_t *>(m_alloc(req.cb_auxin));
+	if (req.auxin == nullptr) {
+		req.cb_auxin = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(req.auxin, req.cb_auxin);
+}
+
+static pack_result nsp_ext_p_stat(nsp_ext_push &ext, const STAT &s)
+{
+	TRY(ext.p_uint32(s.sort_type));
+	TRY(ext.p_uint32(s.container_id));
+	TRY(ext.p_uint32(s.cur_rec));
+	TRY(ext.p_int32(s.delta));
+	TRY(ext.p_uint32(s.num_pos));
+	TRY(ext.p_uint32(s.total_rec));
+	TRY(ext.p_uint32(s.codepage));
+	TRY(ext.p_uint32(s.template_locale));
+	return ext.p_uint32(s.sort_locale);
+}
+
+static pack_result nsp_ext_p_colrow(nsp_ext_push &ext, const nsp_rowset2 *colrow)
+{
+	TRY(ext.p_proptag_la(colrow->columns));
+	TRY(ext.p_uint32(colrow->row_count));
+	for (size_t i = 0; i < colrow->row_count; ++i)
+		TRY(ext.p_proprow(colrow->columns, colrow->rows[i]));
+	return pack_result::ok;
+}
+
+pack_result nsp_ext_push::p_nsp_response(const bind_response &rsp)
+{
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	TRY(p_guid(rsp.server_guid));
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const unbind_response &rsp)
+{
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const comparemids_response &rsp)
+{
+	TRY(p_uint32(rsp.status));
+	TRY(p_int32(rsp.cmp));
+	TRY(p_uint32(rsp.result));
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const dntomid_response &rsp)
+{
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	if (rsp.result != ecSuccess) {
+		/* OXNSPI v14 §3.1.4.1.13 SPR ¶1 */
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_proptag_la(rsp.outmids));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const getmatches_response &rsp)
+{
+	SCOPED_ABKFLAG(*this);
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	TRY(p_uint8(0xFF));
+	TRY(nsp_ext_p_stat(*this, rsp.stat));
+	if (rsp.result != ecSuccess) {
+		/* OXNSPI v14 §3.1.4.1.10 SPR ¶4 */
+		TRY(p_uint8(0));
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_proptag_la(rsp.mids));
+		TRY(p_uint8(0xFF));
+		TRY(nsp_ext_p_colrow(*this, &rsp.column_rows));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const getproplist_response &rsp)
+{
+	SCOPED_ABKFLAG(*this);
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	if (rsp.result != ecSuccess) {
+		/* OXNSPI v14 §3.1.4.1.6 SPR ¶1 */
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_proptag_la(rsp.proptags));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const getprops_response &rsp)
+{
+	SCOPED_ABKFLAG(*this);
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	TRY(p_uint32(rsp.codepage));
+	if ((rsp.result != ecSuccess && rsp.result != ecWarnWithErrors) ||
+	    rsp.row == nullptr) {
+		/* ONXSPI v14 §3.1.4.1.7 SPR ¶2 */
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_tpropval_la(*rsp.row));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const getspecialtable_response &rsp)
+{
+	SCOPED_ABKFLAG(*this);
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	TRY(p_uint32(rsp.codepage));
+	if (rsp.version == nullptr) {
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_uint32(*rsp.version));
+	}
+	if (rsp.result != ecSuccess) {
+		/* OXNSPI v14 §3.1.4.1.3 SPR ¶2 */
+		TRY(p_uint8(0));
+	} else if (rsp.count == 0) {
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_uint32(rsp.count));
+		for (size_t i = 0; i < rsp.count; ++i)
+			TRY(p_tpropval_la(rsp.row[i]));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const gettemplateinfo_response &rsp)
+{
+	SCOPED_ABKFLAG(*this);
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	TRY(p_uint32(rsp.codepage));
+	if (rsp.row == nullptr) {
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_tpropval_la(*rsp.row));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const modlinkatt_response &rsp)
+{
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const modprops_response &rsp)
+{
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const queryrows_response &rsp)
+{
+	SCOPED_ABKFLAG(*this);
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	TRY(p_uint8(0xFF));
+	TRY(nsp_ext_p_stat(*this, rsp.stat));
+	if (rsp.result != ecSuccess) {
+		/* OXNSPI v14 §3.1.4.1.8 SPR ¶3 */
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(nsp_ext_p_colrow(*this, &rsp.column_rows));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const querycolumns_response &rsp)
+{
+	SCOPED_ABKFLAG(*this);
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	if (rsp.result != ecSuccess) {
+		/* OXNSPI v14 §3.1.4.1.5 SPR ¶1 */
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_proptag_la(rsp.columns));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const resolvenames_response &rsp)
+{
+	SCOPED_ABKFLAG(*this);
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	TRY(p_uint32(rsp.codepage));
+	if (rsp.result != ecSuccess) {
+		/* OXNSPI v14 §3.1.4.1.16 SPR ¶3 */
+		TRY(p_uint8(0));
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_proptag_la(rsp.mids));
+		TRY(p_uint8(0xFF));
+		TRY(nsp_ext_p_colrow(*this, &rsp.column_rows));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const resortrestriction_response &rsp)
+{
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	TRY(p_uint8(0xFF));
+	TRY(nsp_ext_p_stat(*this, rsp.stat));
+	if (rsp.result != ecSuccess) {
+		/* OXNSPI v14 §3.1.4.1.11 SPR ¶3 */
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_proptag_la(rsp.outmids));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const seekentries_response &rsp)
+{
+	SCOPED_ABKFLAG(*this);
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	TRY(p_uint8(0xFF));
+	TRY(nsp_ext_p_stat(*this, rsp.stat));
+	if (rsp.result != ecSuccess) {
+		/* OXNSPI v14 §3.1.4.1.9 SPR ¶4 */
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(nsp_ext_p_colrow(*this, &rsp.column_rows));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const updatestat_response &rsp)
+{
+	TRY(p_uint32(rsp.status));
+	TRY(p_uint32(rsp.result));
+	TRY(p_uint8(0xFF));
+	TRY(nsp_ext_p_stat(*this, rsp.stat));
+	if (!rsp.delta.has_value()) {
+		TRY(p_uint8(0));
+	} else {
+		TRY(p_uint8(0xFF));
+		TRY(p_int32(*rsp.delta));
+	}
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const getmailboxurl_response &rsp)
+{
+	TRY(p_uint32(rsp.status));
+	TRY(p_err32(rsp.result));
+	TRY(p_wstr(rsp.server_url.c_str()));
+	return p_uint32(0);
+}
+
+pack_result nsp_ext_push::p_nsp_response(const getaddressbookurl_response &rsp)
+{
+	TRY(p_uint32(rsp.status));
+	TRY(p_err32(rsp.result));
+	TRY(p_wstr(rsp.server_url.c_str()));
+	return p_uint32(0);
+}

@@ -1,0 +1,70 @@
+#pragma once
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <gromox/common_types.hpp>
+#include <gromox/proc_common.h>
+#include "nsp_types.hpp"
+#define HANDLE_EXCHANGE_NSP				1
+
+DECLARE_PROC_API(nsp, extern);
+using namespace nsp;
+#define ZZNDR_NS nsp
+#include <gromox/zz_ndr_stack.hpp>
+
+/* bitmap NspiBind flags */
+enum {
+	fAnonymousLogin = 0x20U,
+};
+
+/* bitmap NspiQueryRows flags */
+enum {
+	fSkipObjects = 0x1U,
+	fEphID = 0x2U,
+};
+
+/* bitmap NspiGetSpecialTable flags */
+enum {
+	NspiAddressCreationTemplates = 0x2U,
+	NspiUnicodeStrings = 0x4U,
+};
+
+/* bitmap NspiQueryColumns flags */
+enum {
+	NspiUnicodeProptypes = 0x80000000U,
+};
+
+/* PR_CONTAINER_FLAGS values */
+#define	AB_RECIPIENTS					0x1
+#define	AB_SUBCONTAINERS				0x2
+#define	AB_UNMODIFIABLE					0x8
+
+enum {
+	SortTypeDisplayName = 0,
+	SortTypePhoneticDisplayName = 0x3,
+	SortTypeDisplayName_RO = 0x3e8,
+	SortTypeDisplayName_W = 0x3e9,
+};
+
+extern GUID common_util_get_server_guid();
+void common_util_day_to_filetime(const char *str, FILETIME *pftime);
+extern char *cu_strdup(std::string_view, unsigned int = NDR_STACK_OUT);
+extern char *cu_utf8_to_mb_dup(cpid_t, std::string_view, unsigned int = NDR_STACK_OUT);
+extern char *cu_mb_to_utf8_dup(cpid_t, std::string_view, unsigned int = NDR_STACK_OUT);
+void common_util_set_ephemeralentryid(uint32_t display_type,
+	uint32_t minid, EPHEMERAL_ENTRYID *pephid);
+extern bool common_util_set_permanententryid(enum display_type dtyp, const GUID *in, const char *dn, EMSAB_ENTRYID *out);
+extern bool cu_permeid_to_bin(const EMSAB_ENTRYID_view &, BINARY *);
+extern bool cu_ephid_to_bin(const EPHEMERAL_ENTRYID &, BINARY *);
+extern NSP_ROWSET *common_util_proprowset_init();
+NSP_PROPROW* common_util_proprowset_enlarge(NSP_ROWSET *pset);
+NSP_PROPROW* common_util_propertyrow_init(NSP_PROPROW *prow);
+PROPERTY_VALUE* common_util_propertyrow_enlarge(NSP_PROPROW *prow);
+extern std::string cu_cvt_str(std::string_view sv, cpid_t cpid, bool to_utf8);
+BOOL common_util_load_file(const char *path, BINARY *pbin);
+extern int common_util_run();
+
+extern BOOL (*get_named_propids)(const char *dir, BOOL create, const PROPNAME_ARRAY *, PROPID_ARRAY *);
+extern BOOL (*get_store_properties)(const char *dir, cpid_t, proptag_cspan, TPROPVAL_ARRAY *);
+extern BOOL (*read_delegates)(const char *dir, uint32_t mode, std::vector<std::string> *);
+extern BOOL (*write_delegates)(const char *dir, uint32_t mode, const std::vector<std::string> &);

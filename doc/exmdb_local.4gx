@@ -1,0 +1,61 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2025 grommunio GmbH
+.TH exmdb_local 4gx "" "Gromox" "Gromox admin reference"
+.SH Name
+exmdb_local \(em LDA hook that offers a exmdb_provider(4gx) client
+with a C API
+.SH Description
+An LDA hook for delivery(8gx) which places mail into a store by
+connecting to a exmdb_provider(4gx) service.
+.SH Configuration directives
+The usual config file location is /etc/gromox/exmdb_local.cfg.
+.TP
+\fBautoreply_silence_window\fP
+-> See gromox.cfg(5) manpage instead!
+.TP
+\fBcache_scan_interval\fP
+Interval in which to scan /var/lib/gromox/queue/cache.
+.br
+Default: 3min
+.TP
+\fBexmdb_connection_num\fP
+Default: \fI5\fP
+.TP
+\fBlda_mrautoproc\fP
+Perform meeting request autoprocessing. This feature is currently experimental.
+Requires lda_twostep_ruleproc to be enabled.
+.br
+Default: \fIno\fP
+.TP
+\fBlda_twostep_ruleproc\fP
+If set to \fI1\fP, an alternate rule processor codebase will be used which
+supports cross-store moves and OOF condition but (at this time) no delegation,
+or autoreply.
+.br
+Default: \fI0\fP
+.TP
+\fBresponse_audit_capacity\fP
+Keep track of at most this many {From address, To address} pairs for bounce
+reports in memory.
+.br
+Default: \fI1000\fP
+.TP
+\fBresponse_interval\fP
+If a bounce report message for a delivery failure or operational failure is to
+be generated, that return message will be suppressed if another report for the
+given {From, To} address pair was produced within the given time period
+previously.
+.br
+Default: \fI3min\fP
+.TP
+\fBretrying_times\fP
+Default: \fI30\fP
+.TP
+\fBx500_org_name\fP
+Default: (unspecified)
+.SH Files
+.IP \(bu 4
+\fIdata_file_path\fP/local_bounce/: response templates for when mail cannot be
+delivered
+.SH See also
+\fBgromox\fP(7), \fBdelivery\fP(8gx), \fBexmdb_provider\fP(4gx)

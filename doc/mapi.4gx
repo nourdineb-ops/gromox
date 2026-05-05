@@ -1,0 +1,20 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2020 grommunio GmbH
+.TH mapi 4gx "" "Gromox" "Gromox admin reference"
+.SH Name
+mapi.so \(em PHP module providing MAPI functions
+.SH Description
+mapi.so is a PHP module that makes available a number of functions to PHP for
+connecting to Gromox services. In particular, the PHP module will regularly
+invoke RPCs to zcore(8gx).
+.SH Configuration
+The PHP ini fragment, mapi.ini, may look like this:
+.in +4n
+.EX
+extension=mapi.so
+[mapi]
+zcore_socket=/run/gromox/zcore.sock
+.EE
+.in
+.SH See also
+\fBgromox\fP(7), \fPzcore\fP(8gx)

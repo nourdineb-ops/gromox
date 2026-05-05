@@ -1,0 +1,130 @@
+.\" SPDX-License-Identifier: CC-BY-SA-4.0 or-later
+.\" SPDX-FileCopyrightText: 2025 grommunio GmbH
+.TH event 8gx "" "Gromox" "Gromox admin reference"
+.SH Name
+event \(em Folder change notification daemon
+.SH Synopsis
+\fBevent\fP [\fB\-c\fP \fIconfig\fP]
+.SH Description
+The event daemon is a software bus, inter-process communication (IPC) mechanism
+that allows communication between multiple processes running concurrently on
+multiple machines.
+.PP
+In practice, it is used by midb(8gx), pop3(8gx) and imap(8gx) to notify
+imap(8gx) instances of changed folder/message states.
+.SH Options
+.TP
+\fB\-c\fP \fIconfig\fP
+Read configuration directives from the given file. If this option is not
+specified, /etc/gromox/gromox.cfg and /etc/gromox/event.cfg will be read.
+.TP
+\fB\-\-version\fP
+Output version information and exit.
+.TP
+\fB\-?\fP
+Display option summary.
+.PP
+All time-based command-line options and configuration file directives are
+subject to the syntax described in gromox(7), section "Duration
+specifications".
+.SH Configuration directives
+The usual config file location is /etc/gromox/event.cfg.
+.TP
+\fBevent_hosts_allow\fP
+A space-separated list of individual host addresses that are allowed to
+converse with the event service. The addresses must conform to gromox(7) \(sc
+"Host addresses". No networks and no CIDR notations are permitted.
+.br
+Default: \fI::1\fP
+.TP
+\fBevent_listen_ip\fP
+The IPv6 socket address for exposing the event service on. The address must
+conform to gromox(7) \(sc "Host addresses".
+.br
+Default: \fI::1\fP
+.TP
+\fBevent_listen_port\fP
+The TCP port number for exposing the event service on.
+.br
+Default: \fI33333\fP
+.TP
+\fBevent_log_file\fP
+Target for log messages here. Special values: "\fI-\fP" (stderr/syslog
+depending on parent PID) or "\fIsyslog\fP" are recognized.
+.br
+Default: \fI-\fP (auto)
+.TP
+\fBevent_log_level\fP
+Maximum verbosity of logging. 1=crit, 2=error, 3=warn, 4=notice, 5=info, 6=debug.
+.br
+Default: \fI4\fP (notice)
+.TP
+\fBevent_threads_num\fP
+The minimum number of client processing threads to keep around.
+.br
+Default: \fI50\fP
+.TP
+\fBrunning_identity\fP
+An unprivileged user account to switch the process to after startup.
+To inhibit the switch, assign the empty value.
+.br
+Default: \fIgromox\fP
+.SH Event protocol
+The event service is exposed as a line-based text protocol. Upon connection,
+the event server gratitiously writes "OK" and will wait for commands. Each
+connection to the event daemon starts out in Enqueue Mode, and this is the only
+mode from which commands can be issued.
+.PP
+"FALSE" may be emitted by the server if there is a syntax error.
+.SS ID
+The command "ID <res_id>" declares the particular connection to be a notification
+sender. res_id is generally the hostname and the PID. The server always
+responds with "TRUE". (The connection stays in Enqueue Mode.)
+.SS LISTEN
+The command "LISTEN <res_id>" declares the particular connection to be a
+notification receiver. res_id follows the same pattern. The server responds
+with "TRUE" and the connection state changes to the Dequeue Mode (see below).
+.SS SELECT
+The command "SELECT <username> <folder>" subscribes those connections that have
+registered \fBas a listener for res_id\fP to notifications. (This means that a
+process wishing to use event_stub(4gx) to listen for notifications strictly
+requires loading event_proxy(4gx) too, and, in essence, use two connections to
+event(8gx).) The server responds with "FALSE" if no listener exists, or "TRUE"
+on success.
+.SS UNSELECT
+The command "UNSELECT <username> <folder>" unsubscribes those connections that
+had registered as a listener for res_id. The server always responds with
+"TRUE".
+.SS QUIT
+Terminate the connection.
+.SS PING
+Reset inactivity timer on connection.
+.SS Partially parsed commands
+Any other input is treated as a notification item and is not interpreted by
+event(8gx) beyond checking the number of fields:
+.SS FOLDER-TOUCH
+The notification "FOLDER\-TOUCH <username> <folder>" informs listeners that the
+folder metadata has changed and warrants being reloaded. This is also how the
+arrival of new messages is conveyed.
+.SS MESSAGE-FLAG
+The notification "MESSAGE\-FLAG <username> <folder> <messageid>" informs
+listeners that the message metadata has changed and warrants being reloaded.
+(This operation is no longer recognized since Gromox 2.17-26-g10564f3e7.)
+.SS MESSAGE-UFLAG
+The notification "MESSAGE\-UFLAG <username> <folder> <imapuid>" informs
+listeners that the message metadata has changed and warrants being reloaded.
+.SS MESSAGE-EXPUNGE
+The notification "MESSAGE\-EXPUNGE <username> <folder> <messageid>" informs
+listeners that the message was deleted.
+.SS Client behavior
+Clients in Dequeue Mode will receive notifications. Each notification line
+received by the client needs to be acknowledged with a "TRUE" response. It is
+not possible to exit Dequeue Mode; connection termination is the only way out.
+.PP
+Events do not echo for a particular res_id. The event_proxy(4gx) and
+event_stub(4gx) components use the getpid() function when
+constructing the res_id for the ID/LISTEN commands. A process like imap(8gx)
+which uses both components will intentionally not see its own notifications over
+the gromox-event IPC system this way.
+.SH See also
+\fBgromox\fP(7), \fBevent_proxy\fP(4gx), \fBevent_stub\fP(4gx)

@@ -1,0 +1,62 @@
+#pragma once
+#include <cstdint>
+#include <list>
+#include <memory>
+#include <sys/types.h>
+#include <gromox/fileio.h>
+#include <gromox/mapi_types.hpp>
+#define FTSTREAM_PRODUCER_POINT_LENGTH			1024
+#define FTSTREAM_PRODUCER_BUFFER_LENGTH			4*1024*1024
+#define STRING_OPTION_NONE						0x00
+#define STRING_OPTION_UNICODE					0x01
+#define STRING_OPTION_CPID						0x02
+#define STRING_OPTION_FORCE_UNICODE				0x08
+
+struct attachment_content;
+struct folder_changes;
+struct logon_object;
+struct message_content;
+struct progress_information;
+struct progress_message;
+
+enum point_type {
+	normal_break, long_var, wstring,
+};
+
+struct point_node {
+	point_type type;
+	uint32_t offset;
+};
+
+struct fxstream_producer {
+	protected:
+	fxstream_producer() = default;
+	NOMOVE(fxstream_producer);
+
+	public:
+	static std::unique_ptr<fxstream_producer> create(logon_object *, uint8_t string_option);
+	inline uint32_t total_length() const { return offset; }
+	BOOL read_buffer(void *buf, uint16_t *len, BOOL *last);
+	BOOL write_uint32(uint32_t);
+	bool write_proplist(const TPROPVAL_ARRAY &);
+	bool write_attachmentcontent(bool delprop, const attachment_content &);
+	bool write_messagecontent(bool delprop, const message_content &);
+	bool write_message(const message_content &);
+	bool write_progresstotal(const progress_information &);
+	bool write_progresspermessage(const progress_message &);
+	bool write_messagechangefull(const TPROPVAL_ARRAY &chgheader, const message_content &);
+	bool write_deletions(const TPROPVAL_ARRAY &);
+	bool write_readstatechanges(const TPROPVAL_ARRAY &);
+	bool write_state(const TPROPVAL_ARRAY &);
+	bool write_hierarchysync(const folder_changes &, const TPROPVAL_ARRAY *del, const TPROPVAL_ARRAY &state);
+
+	int type = 0;
+	uint32_t offset = 0;
+	gromox::tmpfile fd;
+	uint8_t buffer[FTSTREAM_PRODUCER_BUFFER_LENGTH]{};
+	uint32_t buffer_offset = 0, read_offset = 0;
+	uint8_t string_option = 0;
+	logon_object *plogon = nullptr; /* plogon is a protected member */
+	std::list<point_node> bp_list;
+	BOOL b_read = false;
+};

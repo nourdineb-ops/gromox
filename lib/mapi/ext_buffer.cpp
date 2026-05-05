@@ -1,0 +1,3289 @@
+// SPDX-License-Identifier: GPL-2.0-only WITH linking exception
+// SPDX-FileCopyrightText: 2021–2026 grommunio GmbH
+// This file is part of Gromox.
+#include <climits>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
+#include <libHX/endian_float.h>
+#include <libHX/string.h>
+#include <gromox/defs.h>
+#include <gromox/element_data.hpp>
+#include <gromox/ext_buffer.hpp>
+#include <gromox/mapi_types.hpp>
+#include <gromox/mapidefs.h>
+#include <gromox/util.hpp>
+#include <gromox/zcore_types.hpp>
+#define TRY(expr) do { pack_result klfdv{expr}; if (klfdv != pack_result::ok) return klfdv; } while (false)
+#define CLAMP16(v) ((v) = std::min((v), static_cast<uint16_t>(UINT16_MAX)))
+#define CLAMP32(v) ((v) = std::min((v), static_cast<uint32_t>(UINT32_MAX)))
+#define CLAMP64(v) ((v) = std::min((v), static_cast<uint64_t>(UINT64_MAX)))
+
+using namespace gromox;
+
+/*
+ * On the matter of %EXT_FLAG_ABK: When NSP is run over MH, some nonsensical
+ * alternate data formats are used. OXCMAPIHTTP v13 §2.2.1 mentions some of
+ * these. The document is grossly incomplete. Only §2.2.1.1 specifies a
+ * HasValue field, but 0xFF bytes can appear in other structs too.
+ *
+ *
+ * In general, all string pointers must be non-null; only very few cases (like
+ * g_str_a,p_str_a; and their callsites) allow for, and recognize, null string
+ * pointers.
+ */
+
+/**
+ * @alloc:	Function for allocating new blocks. If nullptr, the caller does
+ * 		not expect to observe any allocations, so none are made.
+ */
+void EXT_PULL::init(const void *pdata, uint32_t data_size,
+    EXT_BUFFER_ALLOC alloc, uint32_t flags)
+{
+	m_udata = static_cast<const uint8_t *>(pdata);
+	m_data_size = data_size;
+	m_alloc = alloc != nullptr ? alloc : [](size_t) -> void * { return nullptr; };
+	m_offset = 0;
+	m_flags = flags;
+}
+
+pack_result EXT_PULL::advance(uint32_t size)
+{
+	m_offset += size;
+	if (m_offset > m_data_size)
+		return pack_result::bufsize;
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_rpc_header_ext(RPC_HEADER_EXT *r)
+{
+	TRY(g_uint16(&r->version));
+	TRY(g_uint16(&r->flags));
+	TRY(g_uint16(&r->size));
+	return g_uint16(&r->size_actual);
+}
+
+pack_result EXT_PULL::g_uint8(uint8_t *v)
+{
+	if (m_data_size < sizeof(uint8_t) ||
+	    m_offset + sizeof(uint8_t) > m_data_size)
+		return pack_result::bufsize;
+	*v = m_udata[m_offset];
+	m_offset += sizeof(uint8_t);
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_uint16(uint16_t *v)
+{
+	if (m_data_size < sizeof(uint16_t) ||
+	    m_offset + sizeof(uint16_t) > m_data_size)
+		return pack_result::bufsize;
+	*v = le16p_to_cpu(&m_udata[m_offset]);
+	CLAMP16(*v);
+	m_offset += sizeof(uint16_t);
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_uint32(uint32_t *v)
+{
+	if (m_data_size < sizeof(uint32_t) ||
+	    m_offset + sizeof(uint32_t) > m_data_size)
+		return pack_result::bufsize;
+	*v = le32p_to_cpu(&m_udata[m_offset]);
+	CLAMP32(*v);
+	m_offset += sizeof(uint32_t);
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_uint64(uint64_t *v)
+{
+	if (m_data_size < sizeof(uint64_t) ||
+	    m_offset + sizeof(uint64_t) > m_data_size)
+		return pack_result::bufsize;
+	*v = le64p_to_cpu(&m_udata[m_offset]);
+	CLAMP64(*v);
+	m_offset += sizeof(uint64_t);
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_float(float *v)
+{
+	if (m_data_size < sizeof(float) ||
+	    m_offset + sizeof(float) > m_data_size)
+		return pack_result::bufsize;
+	*v = float_le32p_to_cpu(&m_udata[m_offset]);
+	m_offset += sizeof(float);
+	static_assert(std::numeric_limits<float>::is_iec559);
+	static_assert(sizeof(float) == sizeof(uint32_t));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_double(double *v)
+{
+	if (m_data_size < sizeof(double) ||
+	    m_offset + sizeof(double) > m_data_size)
+		return pack_result::bufsize;
+	*v = float_le64p_to_cpu(&m_udata[m_offset]);
+	m_offset += sizeof(double);
+	static_assert(std::numeric_limits<double>::is_iec559);
+	static_assert(sizeof(double) == sizeof(uint64_t));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_bool(BOOL *v)
+{
+	if (m_data_size < sizeof(uint8_t) ||
+	    m_offset + sizeof(uint8_t) > m_data_size)
+		return pack_result::bufsize;
+	auto tmp_byte = m_udata[m_offset++];
+	if (tmp_byte == 0)
+		*v = FALSE;
+	else if (tmp_byte == 1)
+		*v = TRUE;
+	else
+		return pack_result::format;
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_bytes(void *data, uint32_t n)
+{
+	if (n == 0)
+		return pack_result::ok;
+	if (m_data_size < n || m_offset + n > m_data_size)
+		return pack_result::bufsize;
+	memcpy(data, &m_udata[m_offset], n);
+	m_offset += n;
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_guid(GUID *r)
+{
+	TRY(g_uint32(&r->time_low));
+	TRY(g_uint16(&r->time_mid));
+	TRY(g_uint16(&r->time_hi_and_version));
+	TRY(g_bytes(r->clock_seq, 2));
+	TRY(g_bytes(r->node, 6));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_str(char **ppstr)
+{
+	if (m_offset >= m_data_size)
+		return pack_result::bufsize;
+	auto len = strnlen(&m_cdata[m_offset], m_data_size - m_offset);
+	if (len + 1 > m_data_size - m_offset)
+		return pack_result::format;
+	len ++;
+	*ppstr = anew<char>(len);
+	if (*ppstr == nullptr)
+		return pack_result::alloc;
+	memcpy(*ppstr, &m_udata[m_offset], len);
+	return advance(len);
+}
+
+pack_result EXT_PULL::g_str(std::string *out) try
+{
+	if (m_offset >= m_data_size)
+		return pack_result::bufsize;
+	auto len = strnlen(&m_cdata[m_offset], m_data_size - m_offset);
+	if (len + 1 > m_data_size - m_offset)
+		return pack_result::format;
+	out->assign(reinterpret_cast<const char *>(&m_udata[m_offset]), len);
+	return advance(len + 1);
+} catch (const std::bad_alloc &) {
+	return pack_result::alloc;
+}
+
+pack_result EXT_PULL::g_wstr(char **ppstr)
+{
+	/* Everything is measured in octets */
+	size_t i;
+	
+	if (!(m_flags & EXT_FLAG_UTF16))
+		return g_str(ppstr);
+	if (m_offset >= m_data_size)
+		return pack_result::bufsize;
+	size_t max_len = m_data_size - m_offset;
+	for (i = 0; i < max_len - 1; i += 2)
+		if (m_udata[m_offset+i] == '\0' && m_udata[m_offset+i+1] == '\0')
+			break;
+	if (i >= max_len - 1)
+		return pack_result::bufsize;
+	auto len = i + 2;
+	auto bufsize = utf16_to_utf8_len(len);
+	*ppstr = anew<char>(bufsize);
+	if (*ppstr == nullptr)
+		return pack_result::alloc;
+	if (!utf16le_to_utf8(&m_cdata[m_offset], len, *ppstr, bufsize))
+		return pack_result::charconv;
+	return advance(len);
+}
+
+pack_result EXT_PULL::g_wstr(std::string *out) try
+{
+	/* Everything is measured in octets */
+	size_t i;
+	
+	if (!(m_flags & EXT_FLAG_UTF16))
+		return g_str(out);
+	if (m_offset >= m_data_size)
+		return pack_result::bufsize;
+	size_t max_len = m_data_size - m_offset;
+	for (i = 0; i < max_len - 1; i += 2)
+		if (m_udata[m_offset+i] == '\0' && m_udata[m_offset+i+1] == '\0')
+			break;
+	if (i >= max_len - 1)
+		return pack_result::bufsize;
+	auto len = i + 2;
+	auto bufsize = utf16_to_utf8_xlen(len);
+	out->resize(bufsize);
+	if (!utf16le_to_utf8(&m_cdata[m_offset], len, out->data(), bufsize))
+		return pack_result::charconv;
+	out->resize(strlen(out->c_str()));
+	return advance(len);
+} catch (const std::bad_alloc &) {
+	return pack_result::alloc;
+}
+
+pack_result EXT_PULL::g_blob(DATA_BLOB *pblob)
+{
+	
+	if (m_offset > m_data_size)
+		return pack_result::bufsize;
+	uint32_t length = m_data_size - m_offset;
+	pblob->pb = anew<uint8_t>(length);
+	if (pblob->pb == nullptr)
+		return pack_result::alloc;
+	memcpy(pblob->pb, &m_udata[m_offset], length);
+	pblob->cb = length;
+	m_offset += length;
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_bin(BINARY *r)
+{
+	if (m_flags & EXT_FLAG_WCOUNT) {
+		TRY(g_uint32(&r->cb));
+	} else {
+		uint16_t cb;
+		TRY(g_uint16(&cb));
+		r->cb = cb;
+	}
+	if (r->cb == 0) {
+		r->pb = NULL;
+		return pack_result::ok;
+	}
+	CLAMP32(r->cb);
+	r->pv = m_alloc(r->cb);
+	if (r->pv == nullptr) {
+		r->cb = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(r->pv, r->cb);
+}
+
+pack_result EXT_PULL::g_bin(std::string *r) try
+{
+	size_t z = 0;
+	if (m_flags & EXT_FLAG_WCOUNT) {
+		uint32_t cb = 0;
+		TRY(g_uint32(&cb));
+		z = cb;
+	} else {
+		uint16_t cb = 0;
+		TRY(g_uint16(&cb));
+		z = cb;
+	}
+	r->resize(z);
+	return z != 0 ? g_bytes(r->data(), z) : pack_result::ok;
+} catch (const std::bad_alloc &) {
+	return pack_result::alloc;
+}
+
+pack_result EXT_PULL::g_sbin(BINARY *r)
+{
+	uint16_t cb;
+	
+	TRY(g_uint16(&cb));
+	CLAMP16(cb);
+	r->cb = cb;
+	if (r->cb == 0) {
+		r->pb = NULL;
+		return pack_result::ok;
+	}
+	r->pv = m_alloc(r->cb);
+	if (r->pv == nullptr) {
+		r->cb = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(r->pv, r->cb);
+}
+
+pack_result EXT_PULL::g_bin_ex(BINARY *r)
+{
+	TRY(g_uint32(&r->cb));
+	if (r->cb == 0) {
+		r->pb = NULL;
+		return pack_result::ok;
+	}
+	CLAMP32(r->cb);
+	r->pv = m_alloc(r->cb);
+	if (r->pv == nullptr) {
+		r->cb = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(r->pv, r->cb);
+}
+
+pack_result EXT_PULL::g_uint16_an(SHORT_ARRAY *r, uint32_t count)
+{
+	r->count = count;
+	if (r->count == 0) {
+		r->ps = NULL;
+		return pack_result::ok;
+	}
+	r->ps = anew<uint16_t>(r->count);
+	if (r->ps == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_uint16(&r->ps[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_uint16_a(SHORT_ARRAY *r)
+{
+	TRY(g_uint32(&r->count));
+	CLAMP32(r->count);
+	return g_uint16_an(r, r->count);
+}
+
+pack_result EXT_PULL::g_uint32_an(LONG_ARRAY *r, uint32_t count)
+{
+	r->count = count;
+	if (r->count == 0) {
+		r->pl = NULL;
+		return pack_result::ok;
+	}
+	r->pl = anew<uint32_t>(r->count);
+	if (r->pl == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_uint32(&r->pl[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_uint32_a(LONG_ARRAY *r)
+{
+	TRY(g_uint32(&r->count));
+	CLAMP32(r->count);
+	return g_uint32_an(r, r->count);
+}
+
+pack_result EXT_PULL::g_uint64_an(LONGLONG_ARRAY *r, uint32_t count)
+{
+	r->count = count;
+	if (r->count == 0) {
+		r->pll = NULL;
+		return pack_result::ok;
+	}
+	r->pll = anew<uint64_t>(r->count);
+	if (r->pll == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_uint64(&r->pll[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_uint64_a(LONGLONG_ARRAY *r)
+{
+	TRY(g_uint32(&r->count));
+	CLAMP32(r->count);
+	return g_uint64_an(r, r->count);
+}
+
+pack_result EXT_PULL::g_float_an(FLOAT_ARRAY *r, uint32_t count)
+{
+	r->count = count;
+	if (r->count == 0) {
+		r->mval = nullptr;
+		return pack_result::ok;
+	}
+	r->mval = anew<float>(r->count);
+	if (r->mval == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_float(&r->mval[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_float_a(FLOAT_ARRAY *r)
+{
+	TRY(g_uint32(&r->count));
+	CLAMP32(r->count);
+	return g_float_an(r, r->count);
+}
+
+pack_result EXT_PULL::g_double_an(DOUBLE_ARRAY *r, uint32_t count)
+{
+	r->count = count;
+	if (r->count == 0) {
+		r->mval = nullptr;
+		return pack_result::ok;
+	}
+	r->mval = anew<double>(r->count);
+	if (r->mval == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_double(&r->mval[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_double_a(DOUBLE_ARRAY *r)
+{
+	TRY(g_uint32(&r->count));
+	CLAMP32(r->count);
+	return g_double_an(r, r->count);
+}
+
+pack_result EXT_PULL::g_bin_a(BINARY_ARRAY *r)
+{
+	TRY(g_uint32(&r->count));
+	if (r->count == 0) {
+		r->pbin = NULL;
+		return pack_result::ok;
+	}
+	CLAMP32(r->count);
+	r->pbin = anew<BINARY>(r->count);
+	if (r->pbin == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i) {
+		if (m_flags & EXT_FLAG_ABK) {
+			uint8_t value_set;
+			TRY(g_uint8(&value_set));
+			if (value_set == 0) {
+				r->pbin[i].cb = 0;
+				r->pbin[i].pb = nullptr;
+				continue;
+			} else if (value_set != 0xFF) {
+				return pack_result::format;
+			}
+		}
+		TRY(g_bin(&r->pbin[i]));
+	}
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_str_a(STRING_ARRAY *r)
+{
+	TRY(g_uint32(&r->count));
+	if (r->count == 0) {
+		r->ppstr = NULL;
+		return pack_result::ok;
+	}
+	CLAMP32(r->count);
+	r->ppstr = anew<char *>(r->count);
+	if (r->ppstr == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i) {
+		if (m_flags & EXT_FLAG_ABK) {
+			uint8_t value_set;
+			TRY(g_uint8(&value_set));
+			if (value_set == 0) {
+				r->ppstr[i] = nullptr;
+				continue;
+			} else if (value_set != 0xFF) {
+				return pack_result::format;
+			}
+		}
+		TRY(g_str(&r->ppstr[i]));
+	}
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_wstr_a(STRING_ARRAY *r)
+{
+	TRY(g_uint32(&r->count));
+	if (r->count == 0) {
+		r->ppstr = NULL;
+		return pack_result::ok;
+	}
+	CLAMP32(r->count);
+	r->ppstr = anew<char *>(r->count);
+	if (r->ppstr == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i) {
+		if (m_flags & EXT_FLAG_ABK) {
+			uint8_t value_set;
+			TRY(g_uint8(&value_set));
+			if (value_set == 0) {
+				r->ppstr[i] = nullptr;
+				continue;
+			} else if (value_set != 0xFF) {
+				return pack_result::format;
+			}
+		}
+		TRY(g_wstr(&r->ppstr[i]));
+	}
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_guid_an(GUID_ARRAY *r, uint32_t count)
+{
+	r->count = count;
+	if (r->count == 0) {
+		r->pguid = NULL;
+		return pack_result::ok;
+	}
+	r->pguid = anew<GUID>(r->count);
+	if (r->pguid == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_guid(&r->pguid[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_guid_a(GUID_ARRAY *r)
+{
+	TRY(g_uint32(&r->count));
+	CLAMP32(r->count);
+	return g_guid_an(r, r->count);
+}
+
+static pack_result ext_buffer_pull_restriction_and_or(EXT_PULL *pext,
+    RESTRICTION_AND_OR *r)
+{
+	auto &ext = *pext;
+	
+	if (ext.m_flags & EXT_FLAG_WCOUNT) {
+		TRY(pext->g_uint32(&r->count));
+		CLAMP32(r->count);
+	} else {
+		uint16_t count;
+		TRY(pext->g_uint16(&count));
+		CLAMP16(count);
+		r->count = count;
+	}
+	if (r->count == 0) {
+		r->pres = NULL;
+		return pack_result::ok;
+	}
+	r->pres = pext->anew<RESTRICTION>(r->count);
+	if (r->pres == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(pext->g_restriction(&r->pres[i]));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_pull_restriction_not(EXT_PULL *pext, RESTRICTION_NOT *r)
+{
+	return pext->g_restriction(&r->res);
+}
+
+static pack_result ext_buffer_pull_restriction_content(EXT_PULL *pext,
+    RESTRICTION_CONTENT *r)
+{
+	TRY(pext->g_uint32(&r->fuzzy_level));
+	TRY(pext->g_uint32(&r->proptag));
+	if (pext->m_flags & EXT_FLAG_ABK) {
+		/* modeled upon restriction_property; presumed to occur */
+		uint8_t value_set;
+		TRY(pext->g_uint8(&value_set));
+		if (value_set == 0) {
+			r->propval = {};
+			return pack_result::ok;
+		} else if (value_set != 0xFF) {
+			return pack_result::format;
+		}
+	}
+	return pext->g_tagged_pv(&r->propval);
+}
+
+static pack_result ext_buffer_pull_restriction_property(EXT_PULL *pext,
+    RESTRICTION_PROPERTY *r)
+{
+	uint8_t relop;
+	
+	TRY(pext->g_uint8(&relop));
+	r->relop = static_cast<enum relop>(relop);
+	TRY(pext->g_uint32(&r->proptag));
+	if (pext->m_flags & EXT_FLAG_ABK) {
+		uint8_t value_set;
+		TRY(pext->g_uint8(&value_set));
+		if (value_set == 0) {
+			r->propval = {};
+			return pack_result::ok;
+		} else if (value_set != 0xFF) {
+			return pack_result::format;
+		}
+	}
+	return pext->g_tagged_pv(&r->propval);
+}
+
+static pack_result ext_buffer_pull_restriction_propcompare(EXT_PULL *pext,
+    RESTRICTION_PROPCOMPARE *r)
+{
+	uint8_t relop;
+	
+	TRY(pext->g_uint8(&relop));
+	r->relop = static_cast<enum relop>(relop);
+	TRY(pext->g_uint32(&r->proptag1));
+	return pext->g_uint32(&r->proptag2);
+}
+
+static pack_result ext_buffer_pull_restriction_bitmask(EXT_PULL *pext,
+    RESTRICTION_BITMASK *r)
+{
+	uint8_t relop;
+	
+	TRY(pext->g_uint8(&relop));
+	r->bitmask_relop = static_cast<enum bm_relop>(relop);
+	TRY(pext->g_uint32(&r->proptag));
+	return pext->g_uint32(&r->mask);
+}
+
+static pack_result ext_buffer_pull_restriction_size(EXT_PULL *pext,
+    RESTRICTION_SIZE *r)
+{
+	uint8_t relop;
+	
+	TRY(pext->g_uint8(&relop));
+	r->relop = static_cast<enum relop>(relop);
+	TRY(pext->g_uint32(&r->proptag));
+	return pext->g_uint32(&r->size);
+}
+
+static pack_result ext_buffer_pull_restriction_exist(EXT_PULL *pext,
+    RESTRICTION_EXIST *r)
+{
+	return pext->g_uint32(&r->proptag);
+}
+
+static pack_result ext_buffer_pull_restriction_subobj(EXT_PULL *pext,
+    RESTRICTION_SUBOBJ *r)
+{
+	TRY(pext->g_uint32(&r->subobject));
+	return pext->g_restriction(&r->res);
+}
+
+static pack_result ext_buffer_pull_restriction_comment(EXT_PULL *pext,
+    RESTRICTION_COMMENT *r)
+{
+	uint8_t res_present;
+	
+	TRY(pext->g_uint8(&r->count));
+	if (r->count == 0)
+		return pack_result::format;
+	r->ppropval = pext->anew<TAGGED_PROPVAL>(r->count);
+	if (r->ppropval == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(pext->g_tagged_pv(&r->ppropval[i]));
+	TRY(pext->g_uint8(&res_present));
+	if (0 != res_present) {
+		r->pres = pext->anew<RESTRICTION>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return pext->g_restriction(r->pres);
+	}
+	r->pres = NULL;
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_pull_restriction_count(EXT_PULL *pext,
+    RESTRICTION_COUNT *r)
+{
+	TRY(pext->g_uint32(&r->count));
+	return pext->g_restriction(&r->sub_res);
+}
+
+pack_result EXT_PULL::g_restriction(RESTRICTION *r)
+{
+	uint8_t rt;
+	
+	TRY(g_uint8(&rt));
+	r->rt = static_cast<mapi_rtype>(rt);
+	switch (r->rt) {
+	case RES_AND:
+	case RES_OR:
+		r->pres = anew<RESTRICTION_AND_OR>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_and_or(this, r->andor);
+	case RES_NOT:
+		r->pres = anew<RESTRICTION_NOT>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_not(this, r->xnot);
+	case RES_CONTENT:
+		r->pres = anew<RESTRICTION_CONTENT>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_content(this, r->cont);
+	case RES_PROPERTY:
+		r->pres = anew<RESTRICTION_PROPERTY>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_property(this, r->prop);
+	case RES_PROPCOMPARE:
+		r->pres = anew<RESTRICTION_PROPCOMPARE>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_propcompare(this, r->pcmp);
+	case RES_BITMASK:
+		r->pres = anew<RESTRICTION_BITMASK>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_bitmask(this, r->bm);
+	case RES_SIZE:
+		r->pres = anew<RESTRICTION_SIZE>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_size(this, r->size);
+	case RES_EXIST:
+		r->pres = anew<RESTRICTION_EXIST>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_exist(this, r->exist);
+	case RES_SUBRESTRICTION:
+		r->pres = anew<RESTRICTION_SUBOBJ>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_subobj(this, r->sub);
+	case RES_COMMENT:
+	case RES_ANNOTATION:
+		r->pres = anew<RESTRICTION_COMMENT>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_comment(this, r->comment);
+	case RES_COUNT:
+		r->pres = anew<RESTRICTION_COUNT>();
+		if (r->pres == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_restriction_count(this, r->count);
+	case RES_NULL:
+		r->pres = NULL;
+		return pack_result::ok;
+	default:
+		return pack_result::bad_switch;
+	}
+}
+
+pack_result EXT_PULL::g_svreid(SVREID *r)
+{
+	uint8_t ours;
+	uint16_t length;
+	
+	TRY(g_uint16(&length));
+	TRY(g_uint8(&ours));
+	if (!ours) {
+		r->folder_id = eid_t(0);
+		r->message_id = eid_t(0);
+		r->instance = 0;
+		r->pbin = anew<BINARY>();
+		if (r->pbin == nullptr)
+			return pack_result::alloc;
+		r->pbin->cb = length > 0 ? length - 1 : 0;
+		r->pbin->pv = m_alloc(r->pbin->cb);
+		if (r->pbin->cb > 0 && r->pbin->pv == nullptr) {
+			r->pbin->cb = 0;
+			return pack_result::alloc;
+		}
+		return g_bytes(r->pbin->pv, r->pbin->cb);
+	}
+	if (length != 21)
+		return pack_result::format;
+	r->pbin = NULL;
+	TRY(g_uint64(&r->folder_id.m_value));
+	TRY(g_uint64(&r->message_id.m_value));
+	return g_uint32(&r->instance);
+}
+
+pack_result EXT_PULL::g_store_eid(STORE_ENTRYID *r)
+{
+	FLATUID g;
+	TRY(g_uint32(&r->flags));
+	TRY(g_guid(&g));
+	if (g != muidStoreWrap) {
+		mlog(LV_INFO, "I-1969: not a wrapuid");
+		return pack_result::format;
+	}
+	TRY(g_uint8(&r->version));
+	if (r->version != 0) {
+		mlog(LV_INFO, "I-2014: not a recognized wrapuid");
+		return pack_result::format;
+	}
+	TRY(g_uint8(&r->ivflag));
+	if (r->ivflag == 0) {
+		/* MS-OXCDATA v19 §2.2.4.3 */
+		char dll[14];
+		TRY(g_bytes(dll, 14));
+		TRY(g_uint32(&r->wrapped_flags));
+		TRY(g_guid(&r->wrapped_provider_uid));
+		TRY(g_uint32(&r->wrapped_type));
+		TRY(g_str(&r->pserver_name));
+		return g_str(&r->pmailbox_dn);
+	} else if (r->ivflag == 0x1) {
+		/*
+		 * Observed in MSMAPI for freshly added stores that have not
+		 * been opened yet.
+		 */
+		r->wrapped_flags = 0;
+		TRY(g_guid(&r->wrapped_provider_uid));
+		r->wrapped_type = 0;
+		r->pserver_name = anew<char>(1);
+		if (r->pserver_name == nullptr)
+			return pack_result::alloc;
+		*r->pserver_name = '\0';
+		r->pmailbox_dn = anew<char>(1);
+		if (r->pmailbox_dn == nullptr)
+			return pack_result::alloc;
+		*r->pmailbox_dn = '\0';
+		return pack_result::success;
+	}
+	mlog(LV_INFO, "I-2015: not a recognized wrapuid");
+	return pack_result::format;
+}
+
+static pack_result ext_buffer_pull_zmovecopy_action(EXT_PULL *e, ZMOVECOPY_ACTION *r)
+{
+	TRY(e->g_bin(&r->store_eid));
+	return e->g_bin(&r->folder_eid);
+}
+
+static pack_result ext_buffer_pull_movecopy_action(EXT_PULL *pext, MOVECOPY_ACTION *r)
+{
+	uint16_t eid_size;
+	
+	TRY(pext->g_uint8(&r->same_store));
+	TRY(pext->g_uint16(&eid_size));
+	CLAMP16(eid_size);
+	/*
+	 * Office-Inspectors-for-Fiddler uses `if (eid_size > 0)` instead of
+	 * `if (same_store)`, and claims EXC server behavior does not match
+	 * MS-OXORULE v23 §2.2.5.1.2.1.
+	 */
+	if (r->same_store) {
+		r->pstore_eid = NULL;
+		TRY(pext->advance(eid_size));
+		r->pfolder_eid = pext->anew<SVREID>();
+		if (r->pfolder_eid == nullptr)
+			return pack_result::alloc;
+		return pext->g_svreid(static_cast<SVREID *>(r->pfolder_eid));
+	}
+	r->pstore_eid = pext->anew<STORE_ENTRYID>();
+	if (r->pstore_eid == nullptr)
+		return pack_result::alloc;
+	TRY(pext->g_store_eid(r->pstore_eid));
+	r->pfolder_eid = pext->anew<BINARY>();
+	if (r->pfolder_eid == nullptr)
+		return pack_result::alloc;
+	return pext->g_bin(static_cast<BINARY *>(r->pfolder_eid));
+}
+
+static pack_result ext_buffer_pull_zreply_action(EXT_PULL *e, ZREPLY_ACTION *r)
+{
+	TRY(e->g_bin(&r->message_eid));
+	return e->g_guid(&r->template_guid);
+}
+
+static pack_result ext_buffer_pull_reply_action(EXT_PULL *pext, REPLY_ACTION *r)
+{
+	TRY(pext->g_uint64(&r->template_folder_id.m_value));
+	TRY(pext->g_uint64(&r->template_message_id.m_value));
+	return pext->g_guid(&r->template_guid);
+}
+
+static pack_result ext_buffer_pull_recipient_block(EXT_PULL *pext, RECIPIENT_BLOCK *r)
+{
+	TRY(pext->g_uint8(&r->reserved));
+	TRY(pext->g_uint16(&r->count));
+	if (r->count == 0)
+		return pack_result::format;
+	CLAMP16(r->count);
+	r->ppropval = pext->anew<TAGGED_PROPVAL>(r->count);
+	if (r->ppropval == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(pext->g_tagged_pv(&r->ppropval[i]));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_pull_forwarddelegate_action(EXT_PULL *pext,
+    FORWARDDELEGATE_ACTION *r)
+{
+	TRY(pext->g_uint16(&r->count));
+	if (r->count == 0)
+		return pack_result::format;
+	CLAMP16(r->count);
+	r->pblock = pext->anew<RECIPIENT_BLOCK>(r->count);
+	if (r->pblock == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(ext_buffer_pull_recipient_block(pext, &r->pblock[i]));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_pull_action_block(EXT_PULL *pext, ACTION_BLOCK *r)
+{
+	auto &ext = *pext;
+	uint16_t tmp_len;
+	
+	TRY(pext->g_uint16(&r->length));
+	TRY(pext->g_uint8(&r->type));
+	TRY(pext->g_uint32(&r->flavor));
+	TRY(pext->g_uint32(&r->flags));
+	switch (r->type) {
+	case OP_MOVE:
+	case OP_COPY: {
+		if (pext->m_flags & EXT_FLAG_ZCORE) {
+			auto mc = pext->anew<ZMOVECOPY_ACTION>();
+			if (mc == nullptr)
+				return pack_result::alloc;
+			r->pdata = mc;
+			return ext_buffer_pull_zmovecopy_action(pext, mc);
+		}
+		auto mc = pext->anew<MOVECOPY_ACTION>();
+		if (mc == nullptr)
+			return pack_result::alloc;
+		r->pdata = mc;
+		return ext_buffer_pull_movecopy_action(pext, mc);
+	}
+	case OP_REPLY:
+	case OP_OOF_REPLY: {
+		if (pext->m_flags & EXT_FLAG_ZCORE) {
+			auto rp = pext->anew<ZREPLY_ACTION>();
+			if (rp == nullptr)
+				return pack_result::alloc;
+			r->pdata = rp;
+			return ext_buffer_pull_zreply_action(pext, rp);
+		}
+		auto rp = pext->anew<REPLY_ACTION>();
+		if (rp == nullptr)
+			return pack_result::alloc;
+		r->pdata = rp;
+		return ext_buffer_pull_reply_action(pext, rp);
+	}
+	case OP_DEFER_ACTION:
+		tmp_len = r->length - sizeof(uint8_t) - 2*sizeof(uint32_t);
+		r->pdata = ext.m_alloc(tmp_len);
+		if (r->pdata == nullptr)
+			return pack_result::alloc;
+		return pext->g_bytes(r->pdata, tmp_len);
+	case OP_BOUNCE:
+		r->pdata = pext->anew<uint32_t>();
+		if (r->pdata == nullptr)
+			return pack_result::alloc;
+		return pext->g_uint32(static_cast<uint32_t *>(r->pdata));
+	case OP_FORWARD:
+	case OP_DELEGATE:
+		r->pdata = pext->anew<FORWARDDELEGATE_ACTION>();
+		if (r->pdata == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_forwarddelegate_action(pext, static_cast<FORWARDDELEGATE_ACTION *>(r->pdata));
+	case OP_TAG:
+		r->pdata = pext->anew<TAGGED_PROPVAL>();
+		if (r->pdata == nullptr)
+			return pack_result::alloc;
+		return pext->g_tagged_pv(static_cast<TAGGED_PROPVAL *>(r->pdata));
+	case OP_DELETE:
+	case OP_MARK_AS_READ:
+		r->pdata = NULL;
+		return pack_result::ok;
+	default:
+		return pack_result::bad_switch;
+	}
+}
+
+pack_result EXT_PULL::g_rule_actions(RULE_ACTIONS *r)
+{
+	TRY(g_uint16(&r->count));
+	if (r->count == 0)
+		return pack_result::format;
+	CLAMP16(r->count);
+	r->pblock = anew<ACTION_BLOCK>(r->count);
+	if (r->pblock == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(ext_buffer_pull_action_block(this, &r->pblock[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_propval(uint16_t type, void **ppval)
+{
+	if (m_flags & EXT_FLAG_ABK && (type == PT_STRING8 || type == PT_UNICODE ||
+	    type == PT_BINARY || (type & MV_FLAG))) {
+		uint8_t value_set;
+		TRY(g_uint8(&value_set));
+		if (value_set == 0) {
+			*ppval = nullptr;
+			return pack_result::ok;
+		} else if (value_set != 0xFF) {
+			return pack_result::format;
+		}
+	} else if ((type & MVI_FLAG) == MVI_FLAG) {
+	/* convert multi-value instance into single value */
+		type &= ~MVI_FLAG;
+	}
+#define CASE(mt, ct, fu) \
+	case (mt): \
+		*ppval = anew<ct>(); \
+		if (*ppval == nullptr) \
+			return pack_result::alloc; \
+		return fu(static_cast<ct *>(*ppval));
+
+	switch (type) {
+	CASE(PT_UNSPECIFIED, TYPED_PROPVAL, g_typed_pv);
+	CASE(PT_SHORT, uint16_t, g_uint16);
+	case PT_ERROR:
+	CASE(PT_LONG, uint32_t, g_uint32);
+	CASE(PT_FLOAT, float, g_float);
+	case PT_APPTIME:
+	CASE(PT_DOUBLE, double, g_double);
+	CASE(PT_BOOLEAN, uint8_t, g_uint8);
+	case PT_CURRENCY:
+	case PT_SYSTIME:
+	CASE(PT_I8, uint64_t, g_uint64);
+	case PT_STRING8:
+		return g_str(reinterpret_cast<char **>(ppval));
+	case PT_UNICODE:
+		return g_wstr(reinterpret_cast<char **>(ppval));
+	CASE(PT_SVREID, SVREID, g_svreid);
+	CASE(PT_CLSID, GUID, g_guid);
+	CASE(PT_SRESTRICTION, RESTRICTION, g_restriction);
+	CASE(PT_ACTIONS, RULE_ACTIONS, g_rule_actions);
+	case PT_OBJECT:
+		if (m_flags & EXT_FLAG_ABK)
+			return pack_result::ok;
+		[[fallthrough]]; /* odd cases like PR_ATTACH_DATA_OBJ during ICS? */
+	CASE(PT_BINARY, BINARY, g_bin);
+	CASE(PT_MV_SHORT, SHORT_ARRAY, g_uint16_a);
+	CASE(PT_MV_LONG, LONG_ARRAY, g_uint32_a);
+	case PT_MV_CURRENCY:
+	case PT_MV_SYSTIME:
+	CASE(PT_MV_I8, LONGLONG_ARRAY, g_uint64_a);
+	CASE(PT_MV_FLOAT, FLOAT_ARRAY, g_float_a);
+	case PT_MV_APPTIME:
+	CASE(PT_MV_DOUBLE, DOUBLE_ARRAY, g_double_a);
+	CASE(PT_MV_STRING8, STRING_ARRAY, g_str_a);
+	CASE(PT_MV_UNICODE, STRING_ARRAY, g_wstr_a);
+	CASE(PT_MV_CLSID, GUID_ARRAY, g_guid_a);
+	CASE(PT_MV_BINARY, BINARY_ARRAY, g_bin_a);
+	default:
+		return m_flags & EXT_FLAG_ABK ? pack_result::format : pack_result::bad_switch;
+	}
+#undef CASE
+}
+
+pack_result EXT_PULL::g_typed_pv(TYPED_PROPVAL *r)
+{
+	TRY(g_uint16(&r->type));
+	return g_propval(r->type, &r->pvalue);
+}
+
+pack_result EXT_PULL::g_tagged_pv(TAGGED_PROPVAL *r)
+{
+	TRY(g_uint32(&r->proptag));
+	return g_propval(PROP_TYPE(r->proptag), &r->pvalue);
+}
+
+pack_result EXT_PULL::g_longterm(LONG_TERM_ID *r)
+{
+	TRY(g_guid(&r->guid));
+	TRY(g_bytes(r->global_counter.ab, 6));
+	return g_uint16(&r->padding);
+}
+
+pack_result EXT_PULL::g_longterm_range(LONG_TERM_ID_RANGE *r)
+{
+	TRY(g_longterm(&r->min));
+	return g_longterm(&r->max);
+}
+
+pack_result EXT_PULL::g_proptag_a(PROPTAG_ARRAY *r)
+{
+	TRY(g_uint16(&r->count));
+	if (r->count == 0) {
+		r->pproptag = NULL;
+		return pack_result::ok;
+	}
+	CLAMP16(r->count);
+	r->pproptag = anew<uint32_t>(strange_roundup(r->count, SR_GROW_PROPTAG_ARRAY));
+	if (r->pproptag == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_uint32(&r->pproptag[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_proptag_a(std::vector<proptag_t> *r, uint8_t ix) try
+{
+	size_t count = 0;
+	if (ix == 2) {
+		uint16_t z;
+		TRY(g_uint16(&z));
+		count = z;
+	} else if (ix == 4) {
+		uint32_t z;
+		TRY(g_uint32(&z));
+		count = z;
+	}
+	r->resize(count);
+	for (size_t i = 0; i < count; ++i)
+		TRY(g_uint32(&(*r)[i]));
+	return pack_result::ok;
+} catch (const std::bad_alloc &) {
+	return pack_result::alloc;
+}
+
+pack_result EXT_PULL::g_proptag_la(LPROPTAG_ARRAY *r)
+{
+	TRY(g_uint32(&r->cvalues));
+	if (r->cvalues == 0) {
+		r->pproptag = nullptr;
+		return pack_result::ok;
+	}
+	CLAMP32(r->cvalues);
+	r->pproptag = anew<uint32_t>(strange_roundup(r->cvalues, SR_GROW_PROPTAG_ARRAY));
+	if (r->pproptag == nullptr) {
+		r->cvalues = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->cvalues; ++i)
+		TRY(g_uint32(&r->pproptag[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_propname(PROPERTY_NAME *r)
+{
+	uint8_t name_size;
+	
+	TRY(g_uint8(&r->kind));
+	TRY(g_guid(&r->guid));
+	r->lid = 0;
+	r->pname = NULL;
+	if (r->kind == MNID_ID) {
+		TRY(g_uint32(&r->lid));
+	} else if (r->kind == MNID_STRING) {
+		TRY(g_uint8(&name_size));
+		if (name_size < 1)
+			return pack_result::format;
+		uint32_t offset = m_offset + name_size;
+		TRY(g_wstr(&r->pname));
+		if (m_offset > offset)
+			return pack_result::format;
+		m_offset = offset;
+	}
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_propname_a(PROPNAME_ARRAY *r)
+{
+	TRY(g_uint16(&r->count));
+	if (r->count == 0) {
+		r->ppropname = NULL;
+		return pack_result::ok;
+	}
+	CLAMP16(r->count);
+	r->ppropname = anew<PROPERTY_NAME>(r->count);
+	if (r->ppropname == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_propname(&r->ppropname[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_tpropval_a(TPROPVAL_ARRAY *r)
+{
+	TRY(g_uint16(&r->count));
+	if (r->count == 0) {
+		r->ppropval = NULL;
+		return pack_result::ok;
+	}
+	CLAMP16(r->count);
+	r->ppropval = anew<TAGGED_PROPVAL>(strange_roundup(r->count, SR_GROW_TAGGED_PROPVAL));
+	if (r->ppropval == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_tagged_pv(&r->ppropval[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_tpropval_la(LTPROPVAL_ARRAY *r)
+{
+	TRY(g_uint32(&r->count));
+	if (r->count == 0) {
+		r->propval = nullptr;
+		return pack_result::ok;
+	}
+	CLAMP32(r->count);
+	r->propval = anew<TAGGED_PROPVAL>(strange_roundup(r->count, SR_GROW_TAGGED_PROPVAL));
+	if (r->propval == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_tagged_pv(&r->propval[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_tarray_set(TARRAY_SET *r)
+{
+	TRY(g_uint32(&r->count));
+	if (r->count == 0) {
+		r->pparray = NULL;
+		return pack_result::ok;
+	}
+	CLAMP32(r->count);
+	r->pparray = anew<TPROPVAL_ARRAY *>(strange_roundup(r->count, SR_GROW_TPROPVAL_ARRAY));
+	if (r->pparray == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i) {
+		r->pparray[i] = anew<TPROPVAL_ARRAY>();
+		if (r->pparray[i] == nullptr)
+			return pack_result::alloc;
+		TRY(g_tpropval_a(r->pparray[i]));
+	}
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_pull_property_problem(EXT_PULL *pext, PROPERTY_PROBLEM *r)
+{
+	TRY(pext->g_uint16(&r->index));
+	TRY(pext->g_uint32(&r->proptag));
+	return pext->g_uint32(&r->err);
+}
+
+pack_result EXT_PULL::g_problem_a(PROBLEM_ARRAY *r)
+{
+	TRY(g_uint16(&r->count));
+	CLAMP16(r->count);
+	r->pproblem = anew<PROPERTY_PROBLEM>(r->count);
+	if (r->pproblem == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(ext_buffer_pull_property_problem(this, &r->pproblem[i]));
+	return pack_result::ok;
+}
+
+/* Works for GIDs and XIDs */
+pack_result EXT_PULL::g_xid(uint8_t size, XID *pxid)
+{
+	if (size < 17 || size > 24)
+		return pack_result::format;
+	TRY(g_guid(&pxid->guid));
+	TRY(g_bytes(pxid->local_id, size - 16));
+	pxid->size = size;
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_folder_eid(FOLDER_ENTRYID *r)
+{
+	TRY(g_uint32(&r->flags));
+	TRY(g_guid(&r->provider_uid));
+	TRY(g_uint16(&r->eid_type));
+	TRY(g_guid(&r->folder_dbguid));
+	TRY(g_bytes(r->folder_gc.ab, 6));
+	return g_bytes(r->pad1, 2);
+}
+
+static pack_result ext_buffer_pull_ext_movecopy_action(EXT_PULL *pext,
+    EXT_MOVECOPY_ACTION *r)
+{
+	uint32_t size;
+	
+	TRY(pext->g_uint32(&size));
+	if (size == 0)
+		return pack_result::format;
+	else
+		TRY(pext->advance(size));
+	TRY(pext->g_uint32(&size));
+	if (size != 46)
+		return pack_result::format;
+	return pext->g_folder_eid(&r->folder_eid);
+}
+
+pack_result EXT_PULL::g_msg_eid(MESSAGE_ENTRYID *r)
+{
+	TRY(g_uint32(&r->flags));
+	TRY(g_guid(&r->provider_uid));
+	TRY(g_uint16(&r->eid_type));
+	TRY(g_guid(&r->folder_dbguid));
+	TRY(g_bytes(r->folder_gc.ab, 6));
+	TRY(g_bytes(r->pad1, 2));
+	TRY(g_guid(&r->message_dbguid));
+	TRY(g_bytes(r->message_gc.ab, 6));
+	return g_bytes(r->pad2, 2);
+}
+
+static pack_result ext_buffer_pull_ext_reply_action(EXT_PULL *pext,
+    EXT_REPLY_ACTION *r)
+{
+	uint32_t size;
+	
+	TRY(pext->g_uint32(&size));
+	if (size != 70)
+		return pack_result::format;
+	TRY(pext->g_msg_eid(&r->message_eid));
+	return pext->g_guid(&r->template_guid);
+}
+
+
+static pack_result ext_buffer_pull_ext_recipient_block(EXT_PULL *pext,
+    EXT_RECIPIENT_BLOCK *r)
+{
+	TRY(pext->g_uint8(&r->reserved));
+	TRY(pext->g_uint32(&r->count));
+	if (r->count == 0)
+		return pack_result::format;
+	CLAMP32(r->count);
+	r->ppropval = pext->anew<TAGGED_PROPVAL>(r->count);
+	if (r->ppropval == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(pext->g_tagged_pv(&r->ppropval[i]));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_pull_ext_forwarddelegate_action(EXT_PULL *pext,
+	EXT_FORWARDDELEGATE_ACTION *r)
+{
+	TRY(pext->g_uint32(&r->count));
+	if (r->count == 0)
+		return pack_result::format;
+	CLAMP32(r->count);
+	r->pblock = pext->anew<EXT_RECIPIENT_BLOCK>(r->count);
+	if (r->pblock == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(ext_buffer_pull_ext_recipient_block(pext, &r->pblock[i]));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_pull_ext_action_block(EXT_PULL *pext, EXT_ACTION_BLOCK *r)
+{
+	auto &ext = *pext;
+	uint32_t tmp_len;
+	
+	TRY(pext->g_uint32(&r->length));
+	TRY(pext->g_uint8(&r->type));
+	TRY(pext->g_uint32(&r->flavor));
+	TRY(pext->g_uint32(&r->flags));
+	switch (r->type) {
+	case OP_MOVE:
+	case OP_COPY:
+		r->pdata = pext->anew<EXT_MOVECOPY_ACTION>();
+		if (r->pdata == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_ext_movecopy_action(pext, static_cast<EXT_MOVECOPY_ACTION *>(r->pdata));
+	case OP_REPLY:
+	case OP_OOF_REPLY:
+		r->pdata = pext->anew<EXT_REPLY_ACTION>();
+		if (r->pdata == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_ext_reply_action(pext, static_cast<EXT_REPLY_ACTION *>(r->pdata));
+	case OP_DEFER_ACTION:
+		tmp_len = r->length - sizeof(uint8_t) - sizeof(uint32_t);
+		r->pdata = ext.m_alloc(tmp_len);
+		if (r->pdata == nullptr)
+			return pack_result::alloc;
+		return pext->g_bytes(r->pdata, tmp_len);
+	case OP_BOUNCE:
+		r->pdata = pext->anew<uint32_t>();
+		if (r->pdata == nullptr)
+			return pack_result::alloc;
+		return pext->g_uint32(static_cast<uint32_t *>(r->pdata));
+	case OP_FORWARD:
+	case OP_DELEGATE:
+		r->pdata = pext->anew<EXT_FORWARDDELEGATE_ACTION>();
+		if (r->pdata == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_ext_forwarddelegate_action(pext, static_cast<EXT_FORWARDDELEGATE_ACTION *>(r->pdata));
+	case OP_TAG:
+		r->pdata = pext->anew<TAGGED_PROPVAL>();
+		if (r->pdata == nullptr)
+			return pack_result::alloc;
+		return pext->g_tagged_pv(static_cast<TAGGED_PROPVAL *>(r->pdata));
+	case OP_DELETE:
+	case OP_MARK_AS_READ:
+		r->pdata = NULL;
+		return pack_result::ok;
+	default:
+		return pack_result::bad_switch;
+	}
+}
+
+pack_result EXT_PULL::g_ext_rule_actions(EXT_RULE_ACTIONS *r)
+{
+	TRY(g_uint32(&r->count));
+	if (r->count == 0)
+		return pack_result::format;
+	CLAMP32(r->count);
+	r->pblock = anew<EXT_ACTION_BLOCK>(r->count);
+	if (r->pblock == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(ext_buffer_pull_ext_action_block(this, &r->pblock[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_namedprop_info(NAMEDPROPERTY_INFO *r)
+{
+	uint32_t size;
+	
+	TRY(g_uint16(&r->count));
+	if (r->count == 0) {
+		r->ppropid = NULL;
+		r->ppropname = NULL;
+		return pack_result::ok;
+	}
+	CLAMP16(r->count);
+	r->ppropid = anew<uint16_t>(r->count);
+	if (r->ppropid == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	r->ppropname = anew<PROPERTY_NAME>(r->count);
+	if (r->ppropname == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_uint16(&r->ppropid[i]));
+	TRY(g_uint32(&size));
+	uint32_t offset = m_offset + size;
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_propname(&r->ppropname[i]));
+	if (offset < m_offset)
+		return pack_result::format;
+	m_offset = offset;
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_flagged_pv(uint16_t type, FLAGGED_PROPVAL *r)
+{
+	void **ppvalue;
+	
+	if (type == PT_UNSPECIFIED) {
+		/* MS-OXCDATA v17 §2.11.6 FlaggedPropertyValueWithType */
+		TRY(g_uint16(&type));
+		r->pvalue = anew<TYPED_PROPVAL>();
+		if (r->pvalue == nullptr)
+			return pack_result::alloc;
+		static_cast<TYPED_PROPVAL *>(r->pvalue)->type = type;
+		ppvalue = &static_cast<TYPED_PROPVAL *>(r->pvalue)->pvalue;
+	} else {
+		ppvalue = &r->pvalue;
+	}
+	TRY(g_uint8(&r->flag));
+	switch (r->flag) {
+	case FLAGGED_PROPVAL_FLAG_AVAILABLE:
+		return g_propval(type, ppvalue);
+	case FLAGGED_PROPVAL_FLAG_UNAVAILABLE:
+		*ppvalue = NULL;
+		return pack_result::ok;
+	case FLAGGED_PROPVAL_FLAG_ERROR:
+		*ppvalue = anew<uint32_t>();
+		if (*ppvalue == nullptr)
+			return pack_result::alloc;
+		return g_uint32(static_cast<uint32_t *>(*ppvalue));
+	default:
+		return pack_result::bad_switch;
+	}
+}
+
+pack_result EXT_PULL::g_proprow(std::span<const proptag_t> cols, PROPERTY_ROW *r)
+{
+	if (cols.size() > UINT16_MAX)
+		return pack_result::format;
+	TRY(g_uint8(&r->flag));
+	r->pppropval = anew<void *>(cols.size());
+	if (r->pppropval == nullptr)
+		return pack_result::alloc;
+	if (PROPERTY_ROW_FLAG_NONE == r->flag) {
+		for (uint16_t i = 0; i < cols.size(); ++i)
+			TRY(g_propval(PROP_TYPE(cols[i]), &r->pppropval[i]));
+		return pack_result::ok;
+	} else if (PROPERTY_ROW_FLAG_FLAGGED == r->flag) {
+		for (uint16_t i = 0; i < cols.size(); ++i) {
+			r->pppropval[i] = anew<FLAGGED_PROPVAL>();
+			if (r->pppropval[i] == nullptr)
+				return pack_result::alloc;
+			TRY(g_flagged_pv(PROP_TYPE(cols[i]),
+			         static_cast<FLAGGED_PROPVAL *>(r->pppropval[i])));
+		}
+		return pack_result::ok;
+	}
+	return pack_result::bad_switch;
+}
+
+pack_result EXT_PULL::g_sortorder(SORT_ORDER *r)
+{
+	TRY(g_uint16(&r->type));
+	TRY(g_uint16(&r->propid));
+	return g_uint8(&r->table_sort);
+}
+
+pack_result EXT_PULL::g_sortorder_set(SORTORDER_SET *r)
+{
+	TRY(g_uint16(&r->count));
+	CLAMP16(r->count);
+	TRY(g_uint16(&r->ccategories));
+	TRY(g_uint16(&r->cexpanded));
+	if (r->count == 0 || r->ccategories > r->count || r->cexpanded > r->ccategories)
+		return pack_result::format;
+	r->psort = anew<SORT_ORDER>(r->count);
+	if (r->psort == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_sortorder(&r->psort[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_permission_data(PERMISSION_DATA *r)
+{
+	TRY(g_uint8(&r->flags));
+	return g_tpropval_a(&r->propvals);
+}
+
+pack_result EXT_PULL::g_rule_data(RULE_DATA *r)
+{
+	TRY(g_uint8(&r->flags));
+	return g_tpropval_a(&r->propvals);
+}
+
+pack_result EXT_PULL::g_abk_eid(EMSAB_ENTRYID *r)
+{
+	FLATUID g;
+	TRY(g_uint32(&r->flags));
+	TRY(g_guid(&g));
+	if (g != muidEMSAB)
+		return pack_result::format;
+	uint32_t v;
+	TRY(g_uint32(&v));
+	if (v != 1)
+		return pack_result::format;
+	TRY(g_uint32(&r->type));
+	return g_str(&r->x500dn);
+}
+
+pack_result EXT_PULL::g_oneoff_eid(ONEOFF_ENTRYID *r)
+{
+	FLATUID g;
+	TRY(g_uint32(&r->flags));
+	TRY(g_guid(&g));
+	if (g != muidOOP)
+		return pack_result::format;
+	TRY(g_uint16(&r->version));
+	TRY(g_uint16(&r->ctrl_flags));
+	if (r->ctrl_flags & MAPI_ONE_OFF_UNICODE) {
+		TRY(g_wstr(&r->pdisplay_name));
+		TRY(g_wstr(&r->paddress_type));
+		return g_wstr(&r->pmail_address);
+	} else {
+		TRY(g_str(&r->pdisplay_name));
+		TRY(g_str(&r->paddress_type));
+		return g_str(&r->pmail_address);
+	}
+}
+
+pack_result EXT_PULL::g_flatentry_a(BINARY_ARRAY *r)
+{
+	uint32_t bytes;
+	uint8_t pad_len;
+	
+	TRY(g_uint32(&r->count));
+	CLAMP32(r->count);
+	r->pbin = anew<BINARY>(r->count);
+	if (r->pbin == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	TRY(g_uint32(&bytes));
+	uint32_t offset = m_offset + bytes;
+	for (size_t i = 0; i < r->count; ++i) {
+		TRY(g_bin(&r->pbin[i]));
+		if (m_offset > offset)
+			return pack_result::format;
+		bytes = r->pbin[i].cb;
+		pad_len = ((bytes + 3) & ~3) - bytes;
+		TRY(advance(pad_len));
+	}
+	if (m_offset > offset)
+		return pack_result::format;
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_eid_a(EID_ARRAY *r, uint8_t ix)
+{
+	size_t count = 0;
+	if (ix == 2) {
+		uint16_t z;
+		TRY(g_uint16(&z));
+		CLAMP16(z);
+		count = z;
+	} else {
+		uint32_t z;
+		TRY(g_uint32(&z));
+		CLAMP32(z);
+		count = z;
+	}
+	r->count = count;
+	if (r->count == 0) {
+		r->pids = NULL;
+		return pack_result::ok;
+	}
+	r->pids = anew<eid_t>(r->count);
+	if (r->pids == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(g_uint64(&r->pids[i].m_value));
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_systime(SYSTEMTIME *r)
+{
+	TRY(g_int16(&r->year));
+	TRY(g_int16(&r->month));
+	TRY(g_int16(&r->dayofweek));
+	TRY(g_int16(&r->day));
+	TRY(g_int16(&r->hour));
+	TRY(g_int16(&r->minute));
+	TRY(g_int16(&r->second));
+	return g_int16(&r->milliseconds);
+}
+
+pack_result EXT_PULL::g_tzstruct(TZSTRUCT *r)
+{
+	TRY(g_int32(&r->bias));
+	TRY(g_int32(&r->standardbias));
+	TRY(g_int32(&r->daylightbias));
+	TRY(g_int16(&r->standardyear));
+	TRY(g_systime(&r->standarddate));
+	TRY(g_int16(&r->daylightyear));
+	return g_systime(&r->daylightdate);
+}
+
+static pack_result ext_buffer_pull_tzrule(EXT_PULL *pext, TZRULE *r)
+{
+	uint8_t major, minor;
+	uint16_t reserved;
+	TRY(pext->g_uint8(&major));
+	TRY(pext->g_uint8(&minor));
+	TRY(pext->g_uint16(&reserved));
+	TRY(pext->g_uint16(&r->flags));
+	TRY(pext->g_int16(&r->year));
+	TRY(pext->g_bytes(r->x, 14));
+	TRY(pext->g_int32(&r->bias));
+	TRY(pext->g_int32(&r->standardbias));
+	TRY(pext->g_int32(&r->daylightbias));
+	TRY(pext->g_systime(&r->standarddate));
+	return pext->g_systime(&r->daylightdate);
+}
+
+pack_result EXT_PULL::g_tzdef(TZDEF *r)
+{
+	uint8_t major, minor;
+	uint16_t reserved, cbheader;
+	char tmp_buff[262];
+	uint16_t cchkeyname;
+	char tmp_buff1[1024];
+	
+	TRY(g_uint8(&major));
+	TRY(g_uint8(&minor));
+	TRY(g_uint16(&cbheader));
+	if (cbheader > 266)
+		return pack_result::format;
+	TRY(g_uint16(&reserved));
+	TRY(g_uint16(&cchkeyname));
+	if (cbheader != 6 + 2 * cchkeyname)
+		return pack_result::format;
+	memset(tmp_buff, 0, sizeof(tmp_buff));
+	TRY(g_bytes(tmp_buff, cbheader - 6));
+	if (!utf16le_to_utf8(tmp_buff, cbheader - 4, tmp_buff1, std::size(tmp_buff1)))
+		return pack_result::charconv;
+	r->keyname = anew<char>(strlen(tmp_buff1) + 1);
+	if (r->keyname == nullptr)
+		return pack_result::alloc;
+	strcpy(r->keyname, tmp_buff1);
+	TRY(g_uint16(&r->crules));
+	CLAMP16(r->crules);
+	r->prules = anew<TZRULE>(r->crules);
+	if (r->prules == nullptr) {
+		r->crules = 0;
+		return pack_result::alloc;
+	}
+	for (size_t i = 0; i < r->crules; ++i)
+		TRY(ext_buffer_pull_tzrule(this, &r->prules[i]));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_pull_patterntypespecific(EXT_PULL *pext,
+    uint16_t patterntype, PATTERNTYPE_SPECIFIC *r)
+{
+	switch (patterntype) {
+	case rptMinute:
+		/* do nothing */
+		return pack_result::ok;
+	case rptWeek:
+		return pext->g_uint32(&r->weekrecur);
+	case rptMonth:
+	case rptMonthEnd:
+	case rptHjMonth:
+	case rptHjMonthEnd:
+		return pext->g_uint32(&r->dayofmonth);
+	case rptMonthNth:
+	case rptHjMonthNth:
+		TRY(pext->g_uint32(&r->monthnth.weekrecur));
+		return pext->g_uint32(&r->monthnth.recurnum);
+	default:
+		return pack_result::bad_switch;
+	}
+}
+
+static pack_result ext_buffer_pull_exceptioninfo(EXT_PULL *pext, EXCEPTIONINFO *r)
+{
+	uint16_t tmp_len;
+	uint16_t tmp_len2;
+	
+	TRY(pext->g_uint32(&r->startdatetime));
+	TRY(pext->g_uint32(&r->enddatetime));
+	TRY(pext->g_uint32(&r->originalstartdate));
+	TRY(pext->g_uint16(&r->overrideflags));
+	if (r->overrideflags & ARO_SUBJECT) {
+		TRY(pext->g_uint16(&tmp_len));
+		TRY(pext->g_uint16(&tmp_len2));
+		if (tmp_len != tmp_len2 + 1)
+			return pack_result::format;
+		r->subject = pext->anew<char>(tmp_len);
+		if (r->subject == nullptr)
+			return pack_result::alloc;
+		TRY(pext->g_bytes(r->subject, tmp_len2));
+		r->subject[tmp_len2] = '\0';
+	}
+	if (r->overrideflags & ARO_MEETINGTYPE)
+		TRY(pext->g_uint32(&r->meetingtype));
+	if (r->overrideflags & ARO_REMINDERDELTA)
+		TRY(pext->g_uint32(&r->reminderdelta));
+	if (r->overrideflags & ARO_REMINDER)
+		TRY(pext->g_uint32(&r->reminderset));
+	if (r->overrideflags & ARO_LOCATION) {
+		TRY(pext->g_uint16(&tmp_len));
+		TRY(pext->g_uint16(&tmp_len2));
+		if (tmp_len != tmp_len2 + 1)
+			return pack_result::format;
+		r->location = pext->anew<char>(tmp_len);
+		if (r->location == nullptr)
+			return pack_result::alloc;
+		TRY(pext->g_bytes(r->location, tmp_len2));
+		r->location[tmp_len2] = '\0';
+	}
+	if (r->overrideflags & ARO_BUSYSTATUS)
+		TRY(pext->g_uint32(&r->busystatus));
+	if (r->overrideflags & ARO_ATTACHMENT)
+		TRY(pext->g_uint32(&r->attachment));
+	if (r->overrideflags & ARO_SUBTYPE)
+		TRY(pext->g_uint32(&r->subtype));
+	if (r->overrideflags & ARO_APPTCOLOR)
+		TRY(pext->g_uint32(&r->appointmentcolor));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_pull_changehighlight(EXT_PULL *pext, CHANGEHIGHLIGHT *r)
+{
+	TRY(pext->g_uint32(&r->size));
+	TRY(pext->g_uint32(&r->value));
+	if (r->size < sizeof(uint32_t)) {
+		return pack_result::format;
+	} else if (sizeof(uint32_t) == r->size) {
+		r->preserved = NULL;
+		return pack_result::ok;
+	}
+	r->preserved = pext->anew<uint8_t>(r->size - sizeof(uint32_t));
+	if (r->preserved == nullptr) {
+		r->size = 0;
+		return pack_result::alloc;
+	}
+	return pext->g_bytes(r->preserved, r->size - sizeof(uint32_t));
+}
+
+static pack_result ext_buffer_pull_extendedexception(EXT_PULL *pext,
+    uint32_t writerversion2, uint16_t overrideflags, EXTENDEDEXCEPTION *r)
+{
+	int string_len;
+	uint16_t tmp_len;
+	
+	if (writerversion2 >= 0x00003009)
+		TRY(ext_buffer_pull_changehighlight(pext, &r->changehighlight));
+	TRY(pext->g_uint32(&r->reservedblockee1size));
+	if (r->reservedblockee1size == 0) {
+		r->preservedblockee1 = NULL;
+	} else {
+		r->preservedblockee1 = pext->anew<uint8_t>(r->reservedblockee1size);
+		if (r->preservedblockee1 == nullptr) {
+			r->reservedblockee1size = 0;
+			return pack_result::alloc;
+		}
+		TRY(pext->g_bytes(r->preservedblockee1, r->reservedblockee1size));
+	}
+	if (overrideflags & (ARO_LOCATION | ARO_SUBJECT)) {
+		TRY(pext->g_uint32(&r->startdatetime));
+		TRY(pext->g_uint32(&r->enddatetime));
+		TRY(pext->g_uint32(&r->originalstartdate));
+	}
+	if (overrideflags & ARO_SUBJECT) {
+		TRY(pext->g_uint16(&tmp_len));
+		CLAMP16(tmp_len);
+		tmp_len *= 2;
+		std::unique_ptr<char[]> pbuff;
+		try {
+			pbuff = std::make_unique<char[]>(3 * (tmp_len + 2));
+		} catch (const std::bad_alloc &) {
+			return pack_result::alloc;
+		}
+		TRY(pext->g_bytes(pbuff.get(), tmp_len));
+		pbuff[tmp_len ++] = '\0';
+		pbuff[tmp_len ++] = '\0';
+		if (!utf16le_to_utf8(pbuff.get(), tmp_len, &pbuff[tmp_len], 2 * tmp_len))
+			return pack_result::charconv;
+		string_len = strlen(&pbuff[tmp_len]);
+		r->subject = pext->anew<char>(string_len + 1);
+		if (r->subject == nullptr)
+			return pack_result::alloc;
+		strcpy(r->subject, &pbuff[tmp_len]);
+	}
+	if (overrideflags & ARO_LOCATION) {
+		TRY(pext->g_uint16(&tmp_len));
+		CLAMP16(tmp_len);
+		tmp_len *= 2;
+		std::unique_ptr<char[]> pbuff;
+		try {
+			pbuff = std::make_unique<char[]>(3 * (tmp_len + 2));
+		} catch (const std::bad_alloc &) {
+			return pack_result::alloc;
+		}
+		TRY(pext->g_bytes(pbuff.get(), tmp_len));
+		pbuff[tmp_len ++] = '\0';
+		pbuff[tmp_len ++] = '\0';
+		if (!utf16le_to_utf8(pbuff.get(), tmp_len, &pbuff[tmp_len], 2 * tmp_len))
+			return pack_result::charconv;
+		string_len = strlen(&pbuff[tmp_len]);
+		r->location = pext->anew<char>(string_len + 1);
+		if (r->location == nullptr)
+			return pack_result::alloc;
+		strcpy(r->location, &pbuff[tmp_len]);
+	}
+	if (overrideflags & (ARO_SUBJECT | ARO_LOCATION)) {
+		TRY(pext->g_uint32(&r->reservedblockee2size));
+		if (r->reservedblockee2size == 0) {
+			r->preservedblockee2 = NULL;
+		} else {
+			r->preservedblockee2 = pext->anew<uint8_t>(r->reservedblockee2size);
+			if (r->preservedblockee2 == nullptr) {
+				r->reservedblockee2size = 0;
+				return pack_result::alloc;
+			}
+			TRY(pext->g_bytes(r->preservedblockee2, r->reservedblockee2size));
+		}
+	}
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_recpat(RECURRENCE_PATTERN *r)
+{
+	TRY(g_uint16(&r->readerversion));
+	TRY(g_uint16(&r->writerversion));
+	TRY(g_uint16(&r->recurfrequency));
+	TRY(g_uint16(&r->patterntype));
+	TRY(g_uint16(&r->calendartype));
+	TRY(g_uint32(&r->firstdatetime));
+	TRY(g_uint32(&r->period));
+	TRY(g_uint32(&r->slidingflag));
+	TRY(ext_buffer_pull_patterntypespecific(this, r->patterntype, &r->pts));
+	TRY(g_uint32(&r->endtype));
+	TRY(g_uint32(&r->occurrencecount));
+	TRY(g_uint32(&r->firstdow));
+	TRY(g_uint32(&r->deletedinstancecount));
+	CLAMP32(r->deletedinstancecount);
+	if (r->deletedinstancecount == 0) {
+		r->pdeletedinstancedates = NULL;
+	} else {
+		r->pdeletedinstancedates = anew<uint32_t>(r->deletedinstancecount);
+		if (r->pdeletedinstancedates == nullptr) {
+			r->deletedinstancecount = 0;
+			return pack_result::alloc;
+		}
+	}
+	for (size_t i = 0; i < r->deletedinstancecount; ++i)
+		TRY(g_uint32(&r->pdeletedinstancedates[i]));
+	TRY(g_uint32(&r->modifiedinstancecount));
+	CLAMP32(r->modifiedinstancecount);
+	if (r->modifiedinstancecount == 0) {
+		r->pmodifiedinstancedates = NULL;
+	} else {
+		r->pmodifiedinstancedates = anew<uint32_t>(r->modifiedinstancecount);
+		if (r->pmodifiedinstancedates == nullptr) {
+			r->modifiedinstancecount = 0;
+			return pack_result::alloc;
+		}
+	}
+	for (size_t i = 0; i < r->modifiedinstancecount; ++i)
+		TRY(g_uint32(&r->pmodifiedinstancedates[i]));
+	TRY(g_uint32(&r->startdate));
+	return g_uint32(&r->enddate);
+}
+
+pack_result EXT_PULL::g_apptrecpat(APPOINTMENT_RECUR_PAT *r)
+{
+	TRY(g_recpat(&r->recur_pat));
+	TRY(g_uint32(&r->readerversion2));
+	TRY(g_uint32(&r->writerversion2));
+	TRY(g_uint32(&r->starttimeoffset));
+	TRY(g_uint32(&r->endtimeoffset));
+	TRY(g_uint16(&r->exceptioncount));
+	CLAMP16(r->exceptioncount);
+	if (r->exceptioncount == 0) {
+		r->pexceptioninfo = NULL;
+		r->pextendedexception = NULL;
+	} else {
+		r->pexceptioninfo = anew<EXCEPTIONINFO>(r->exceptioncount);
+		if (r->pexceptioninfo == nullptr) {
+			r->exceptioncount = 0;
+			return pack_result::alloc;
+		}
+		r->pextendedexception = anew<EXTENDEDEXCEPTION>(r->exceptioncount);
+		if (r->pextendedexception == nullptr) {
+			r->exceptioncount = 0;
+			return pack_result::alloc;
+		}
+	}
+	for (size_t i = 0; i < r->exceptioncount; ++i)
+		TRY(ext_buffer_pull_exceptioninfo(this, &r->pexceptioninfo[i]));
+	TRY(g_uint32(&r->reservedblock1size));
+	if (r->reservedblock1size == 0) {
+		r->preservedblock1 = NULL;
+	} else {
+		r->preservedblock1 = anew<uint8_t>(r->reservedblock1size);
+		if (r->preservedblock1 == nullptr) {
+			r->reservedblock1size = 0;
+			return pack_result::alloc;
+		}
+		TRY(g_bytes(r->preservedblock1, r->reservedblock1size));
+	}
+	for (size_t i = 0; i < r->exceptioncount; ++i)
+		TRY(ext_buffer_pull_extendedexception(this, r->writerversion2, r->pexceptioninfo[i].overrideflags, &r->pextendedexception[i]));
+	TRY(g_uint32(&r->reservedblock2size));
+	if (r->reservedblock2size == 0) {
+		r->preservedblock2 = NULL;
+		return pack_result::ok;
+	}
+	r->preservedblock2 = anew<uint8_t>(r->reservedblock2size);
+	if (r->preservedblock2 == nullptr) {
+		r->reservedblock2size = 0;
+		return pack_result::alloc;
+	}
+	return g_bytes(r->preservedblock2, r->reservedblock2size);
+}
+
+static pack_result ext_pull_goid_trailer(EXT_PULL *ext,
+    GLOBALOBJECTID *r, size_t len)
+{
+	r->unparsed = true;
+	r->data.pv = ext->m_alloc(len);
+	if (r->data.pv == nullptr) {
+		r->data.cb = 0;
+		return pack_result::alloc;
+	}
+	r->data.cb = len;
+	return ext->g_bytes(r->data.pv, len);
+}
+
+pack_result EXT_PULL::g_goid(GLOBALOBJECTID *r)
+{
+	uint8_t yh;
+	uint8_t yl;
+	
+	TRY(g_guid(&r->arrayid));
+	TRY(g_uint8(&yh));
+	TRY(g_uint8(&yl));
+	r->year = ((uint16_t)yh) << 8 | yl;
+	TRY(g_uint8(&r->month));
+	TRY(g_uint8(&r->day));
+	TRY(g_uint64(&r->creationtime));
+	TRY(g_bytes(r->x, 8));
+	r->unparsed = false;
+	uint32_t unparsed_len = m_offset >= m_data_size ? 0 : m_data_size - m_offset;
+	if (unparsed_len < sizeof(uint32_t))
+		return ext_pull_goid_trailer(this, r, unparsed_len);
+	TRY(g_uint32(&r->data.cb));
+	m_offset -= sizeof(uint32_t);
+	return r->data.cb == unparsed_len - sizeof(uint32_t) ? g_bin_ex(&r->data) :
+	       ext_pull_goid_trailer(this, r, unparsed_len);
+}
+
+static pack_result ext_buffer_pull_attachment_list(EXT_PULL *pext, ATTACHMENT_LIST *r)
+{
+	int i;
+	uint8_t tmp_byte;
+	
+	TRY(pext->g_uint16(&r->count));
+	CLAMP16(r->count);
+	r->pplist = pext->anew<ATTACHMENT_CONTENT *>(strange_roundup(r->count, SR_GROW_ATTACHMENT_CONTENT));
+	if (r->pplist == nullptr) {
+		r->count = 0;
+		return pack_result::alloc;
+	}
+	for (i=0; i<r->count; i++) {
+		r->pplist[i] = pext->anew<ATTACHMENT_CONTENT>();
+		if (r->pplist[i] == nullptr)
+			return pack_result::alloc;
+		TRY(pext->g_tpropval_a(&r->pplist[i]->proplist));
+		TRY(pext->g_uint8(&tmp_byte));
+		if (0 != tmp_byte) {
+			r->pplist[i]->pembedded = pext->anew<MESSAGE_CONTENT>();
+			if (r->pplist[i]->pembedded == nullptr)
+				return pack_result::alloc;
+			TRY(pext->g_msgctnt(r->pplist[i]->pembedded));
+		} else {
+			r->pplist[i]->pembedded = NULL;
+		}
+	}
+	return pack_result::ok;
+}
+
+pack_result EXT_PULL::g_msgctnt(MESSAGE_CONTENT *r)
+{
+	uint8_t tmp_byte;
+	
+	TRY(g_tpropval_a(&r->proplist));
+	TRY(g_uint8(&tmp_byte));
+	if (0 != tmp_byte) {
+		r->children.prcpts = anew<TARRAY_SET>();
+		if (r->children.prcpts == nullptr)
+			return pack_result::alloc;
+		TRY(g_tarray_set(r->children.prcpts));
+	} else {
+		r->children.prcpts = NULL;
+	}
+	TRY(g_uint8(&tmp_byte));
+	if (0 != tmp_byte) {
+		r->children.pattachments = anew<ATTACHMENT_LIST>();
+		if (r->children.pattachments == nullptr)
+			return pack_result::alloc;
+		return ext_buffer_pull_attachment_list(this, r->children.pattachments);
+	}
+	r->children.pattachments = NULL;
+	return pack_result::ok;
+}
+
+BOOL EXT_PUSH::init(void *pdata, uint32_t alloc_size,
+    uint32_t flags, const EXT_BUFFER_MGT *mgt)
+{
+	const EXT_BUFFER_MGT default_mgt = {zalloc, realloc, free};
+	m_mgt = mgt != nullptr ? *mgt : default_mgt;
+	m_flags = flags;
+	if (pdata == nullptr) {
+		m_flags |= EXT_FLAG_DYNAMIC;
+		m_alloc_size = 8192;
+		m_udata = static_cast<uint8_t *>(m_mgt.alloc(m_alloc_size));
+		if (m_udata == nullptr) {
+			m_alloc_size = 0;
+			return FALSE;
+		}
+	} else {
+		m_flags &= ~EXT_FLAG_DYNAMIC;
+		m_udata = static_cast<uint8_t *>(pdata);
+		m_alloc_size = alloc_size;
+	}
+	m_offset = 0;
+	return TRUE;
+}
+
+EXT_PUSH::~EXT_PUSH()
+{
+	if (m_flags & EXT_FLAG_DYNAMIC)
+		m_mgt.free(m_udata);
+}
+
+pack_result EXT_PUSH::p_rpchdr(const RPC_HEADER_EXT &r)
+{
+	TRY(p_uint16(r.version));
+	TRY(p_uint16(r.flags));
+	TRY(p_uint16(r.size));
+	return p_uint16(r.size_actual);
+}
+
+/* FALSE: overflow, TRUE: not overflow */
+bool EXT_PUSH::make_room(uint32_t extra_size)
+{
+	auto alloc_size = extra_size + m_offset;
+	if (m_alloc_size >= alloc_size)
+		return TRUE;
+	if (!(m_flags & EXT_FLAG_DYNAMIC))
+		return FALSE;
+	if (alloc_size < m_alloc_size * 2)
+		/* Exponential growth policy, needed to reach amortized linear time (like std::string) */
+		alloc_size = m_alloc_size * 2;
+	auto pdata = static_cast<uint8_t *>(m_mgt.realloc(m_udata, alloc_size));
+	if (pdata == nullptr)
+		return FALSE;
+	m_udata = pdata;
+	m_alloc_size = alloc_size;
+	return TRUE;
+}
+
+pack_result EXT_PUSH::advance(uint32_t size)
+{
+	if (!make_room(size))
+		return pack_result::bufsize;
+	m_offset += size;
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_bytes(const void *pdata, uint32_t n)
+{
+	if (n == 0)
+		/*
+		 * Covers pdata==nullptr case as far as we care. If
+		 * pdata==nullptr and n>0, memcpy/ASAN will usually crash/exit.
+		 */
+		return pack_result::ok;
+	if (!make_room(n))
+		return pack_result::bufsize;
+	memcpy(&m_udata[m_offset], pdata, n);
+	m_offset += n;
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_bytes(std::string_view sv)
+{
+	if (sv.size() > UINT32_MAX)
+		return pack_result::format;
+	return p_bytes(sv.data(), sv.size());
+}
+
+pack_result EXT_PUSH::p_uint8(uint8_t v)
+{
+	if (!make_room(sizeof(uint8_t)))
+		return pack_result::bufsize;
+	m_udata[m_offset] = v;
+	m_offset += sizeof(uint8_t);
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_uint16(uint16_t v)
+{
+	if (!make_room(sizeof(uint16_t)))
+		return pack_result::bufsize;
+	cpu_to_le16p(&m_udata[m_offset], v);
+	m_offset += sizeof(uint16_t);
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_uint32(uint32_t v)
+{
+	if (!make_room(sizeof(uint32_t)))
+		return pack_result::bufsize;
+	cpu_to_le32p(&m_udata[m_offset], v);
+	m_offset += sizeof(uint32_t);
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_uint64(uint64_t v)
+{
+	if (!make_room(sizeof(uint64_t)))
+		return pack_result::bufsize;
+	cpu_to_le64p(&m_udata[m_offset], v);
+	m_offset += sizeof(uint64_t);
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_float(float v)
+{
+	if (!make_room(sizeof(float)))
+		return pack_result::bufsize;
+	float_cpu_to_le32p(&m_udata[m_offset], v);
+	m_offset += sizeof(float);
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_double(double v)
+{
+	if (!make_room(sizeof(double)))
+		return pack_result::bufsize;
+	float_cpu_to_le64p(&m_udata[m_offset], v);
+	m_offset += sizeof(double);
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_bool(BOOL v)
+{
+	if (!make_room(sizeof(uint8_t)))
+		return pack_result::bufsize;
+	m_udata[m_offset] = !!v;
+	m_offset += sizeof(uint8_t);
+	return pack_result::ok;
+	
+}
+
+pack_result EXT_PUSH::p_bin(const BINARY &r)
+{
+	if (m_flags & EXT_FLAG_WCOUNT) {
+		TRY(p_uint32(r.cb));
+	} else {
+		if (r.cb > 0xFFFF)
+			return pack_result::format;
+		TRY(p_uint16(r.cb));
+	}
+	if (r.cb == 0)
+		return pack_result::ok;
+	return p_bytes(r.pb, r.cb);
+}
+
+pack_result EXT_PUSH::p_bin(std::string_view r)
+{
+	if (m_flags & EXT_FLAG_WCOUNT) {
+		if (r.size() > UINT32_MAX)
+			return pack_result::format;
+		TRY(p_uint32(r.size()));
+	} else {
+		if (r.size() > UINT16_MAX)
+			return pack_result::format;
+		TRY(p_uint16(r.size()));
+	}
+	return r.size() != 0 ? p_bytes(r) : pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_bin_s(const BINARY &r)
+{
+	if (r.cb > 0xFFFF)
+		return pack_result::format;
+	TRY(p_uint16(r.cb));
+	if (r.cb == 0)
+		return pack_result::ok;
+	return p_bytes(r);
+}
+
+pack_result EXT_PUSH::p_bin_ex(const BINARY &r)
+{
+	TRY(p_uint32(r.cb));
+	if (r.cb == 0)
+		return pack_result::ok;
+	return p_bytes(r);
+}
+
+pack_result EXT_PUSH::p_guid(const GUID &r)
+{
+	TRY(p_uint32(r.time_low));
+	TRY(p_uint16(r.time_mid));
+	TRY(p_uint16(r.time_hi_and_version));
+	TRY(p_bytes(r.clock_seq, 2));
+	return p_bytes(r.node, 6);
+}
+
+pack_result EXT_PUSH::p_str(const char *pstr)
+{
+	size_t len = strlen(pstr);
+	if (m_flags & EXT_FLAG_TBLLMT) {
+		if (len > 509) {
+			TRY(p_bytes(pstr, 509));
+			return p_uint8(0);
+		}
+	}
+	return p_bytes(pstr, len + 1);
+}
+
+pack_result EXT_PUSH::p_wstr(const char *pstr)
+{
+	if (!(m_flags & EXT_FLAG_UTF16))
+		return p_str(pstr);
+	auto len = utf8_to_utf16_len(pstr);
+	std::unique_ptr<char[]> pbuff;
+	try {
+		pbuff = std::make_unique<char[]>(len);
+	} catch (const std::bad_alloc &) {
+		return pack_result::alloc;
+	}
+	auto utf16_len = utf8_to_utf16le(pstr, pbuff.get(), len);
+	if (utf16_len < 2) {
+		pbuff[0] = '\0';
+		pbuff[1] = '\0';
+		len = 2;
+	} else {
+		len = utf16_len;
+	}
+	if (m_flags & EXT_FLAG_TBLLMT) {
+		if (len > 510) {
+			len = 510;
+			pbuff[508] = '\0';
+			pbuff[509] = '\0';
+		}
+	}
+	return p_bytes(pbuff.get(), len);
+}
+
+static pack_result ext_buffer_push_restriction_and_or(EXT_PUSH *pext,
+    const RESTRICTION_AND_OR *r)
+{
+	auto &ext = *pext;
+	if (ext.m_flags & EXT_FLAG_WCOUNT)
+		TRY(pext->p_uint32(r->count));
+	else
+		TRY(pext->p_uint16(r->count));
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(pext->p_restriction(r->pres[i]));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_push_restriction_not(EXT_PUSH *pext,
+    const RESTRICTION_NOT *r)
+{
+	return pext->p_restriction(r->res);
+}
+
+static pack_result ext_buffer_push_restriction_content(EXT_PUSH *pext,
+    const RESTRICTION_CONTENT *r)
+{
+	TRY(pext->p_uint32(r->fuzzy_level));
+	TRY(pext->p_uint32(r->proptag));
+	return pext->p_tagged_pv(r->propval);
+}
+
+static pack_result ext_buffer_push_restriction_property(EXT_PUSH *pext,
+    const RESTRICTION_PROPERTY *r)
+{
+	TRY(pext->p_uint8(static_cast<uint8_t>(r->relop)));
+	TRY(pext->p_uint32(r->proptag));
+	return pext->p_tagged_pv(r->propval);
+}
+
+static pack_result ext_buffer_push_restriction_propcompare(EXT_PUSH *pext,
+    const RESTRICTION_PROPCOMPARE *r)
+{
+	TRY(pext->p_uint8(static_cast<uint8_t>(r->relop)));
+	TRY(pext->p_uint32(r->proptag1));
+	return pext->p_uint32(r->proptag2);
+}
+
+static pack_result ext_buffer_push_restriction_bitmask(EXT_PUSH *pext,
+    const RESTRICTION_BITMASK *r)
+{
+	TRY(pext->p_uint8(static_cast<uint8_t>(r->bitmask_relop)));
+	TRY(pext->p_uint32(r->proptag));
+	return pext->p_uint32(r->mask);
+}
+
+static pack_result ext_buffer_push_restriction_size(EXT_PUSH *pext,
+    const RESTRICTION_SIZE *r)
+{
+	TRY(pext->p_uint8(static_cast<uint8_t>(r->relop)));
+	TRY(pext->p_uint32(r->proptag));
+	return pext->p_uint32(r->size);
+}
+
+static pack_result ext_buffer_push_restriction_exist(EXT_PUSH *pext,
+    const RESTRICTION_EXIST *r)
+{
+	return pext->p_uint32(r->proptag);
+}
+
+static pack_result ext_buffer_push_restriction_subobj(EXT_PUSH *pext,
+    const RESTRICTION_SUBOBJ *r)
+{
+	TRY(pext->p_uint32(r->subobject));
+	return pext->p_restriction(r->res);
+}
+
+static pack_result ext_buffer_push_restriction_comment(EXT_PUSH *pext,
+    const RESTRICTION_COMMENT *r)
+{
+	if (r->count == 0)
+		return pack_result::format;
+	TRY(pext->p_uint8(r->count));
+	for (size_t i = 0; i < r->count; ++i)
+		TRY(pext->p_tagged_pv(r->ppropval[i]));
+	if (NULL != r->pres) {
+		TRY(pext->p_uint8(1));
+		return pext->p_restriction(*r->pres);
+	}
+	return pext->p_uint8(0);
+}
+
+static pack_result ext_buffer_push_restriction_count(EXT_PUSH *pext,
+    const RESTRICTION_COUNT *r)
+{
+	TRY(pext->p_uint32(r->count));
+	return pext->p_restriction(r->sub_res);
+}
+
+pack_result EXT_PUSH::p_restriction(const RESTRICTION &r)
+{
+	TRY(p_uint8(static_cast<uint8_t>(r.rt)));
+	switch (r.rt) {
+	case RES_AND:
+	case RES_OR:
+		return ext_buffer_push_restriction_and_or(this, r.andor);
+	case RES_NOT:
+		return ext_buffer_push_restriction_not(this, r.xnot);
+	case RES_CONTENT:
+		return ext_buffer_push_restriction_content(this, r.cont);
+	case RES_PROPERTY:
+		return ext_buffer_push_restriction_property(this, r.prop);
+	case RES_PROPCOMPARE:
+		return ext_buffer_push_restriction_propcompare(this, r.pcmp);
+	case RES_BITMASK:
+		return ext_buffer_push_restriction_bitmask(this, r.bm);
+	case RES_SIZE:
+		return ext_buffer_push_restriction_size(this, r.size);
+	case RES_EXIST:
+		return ext_buffer_push_restriction_exist(this, r.exist);
+	case RES_SUBRESTRICTION:
+		return ext_buffer_push_restriction_subobj(this, r.sub);
+	case RES_COMMENT:
+	case RES_ANNOTATION:
+		return ext_buffer_push_restriction_comment(this, r.comment);
+	case RES_COUNT:
+		return ext_buffer_push_restriction_count(this, r.count);
+	case RES_NULL:
+		return pack_result::ok;
+	default:
+		return pack_result::bad_switch;
+	}
+	return pack_result::bad_switch;
+}
+
+pack_result EXT_PUSH::p_svreid(const SVREID &r)
+{
+	if (r.pbin != nullptr) {
+		TRY(p_uint16(r.pbin->cb + 1));
+		TRY(p_uint8(0));
+		return p_bytes(*r.pbin);
+	}
+	TRY(p_uint16(21));
+	TRY(p_uint8(1));
+	TRY(p_uint64(r.folder_id));
+	TRY(p_uint64(r.message_id));
+	return p_uint32(r.instance);
+}
+
+pack_result EXT_PUSH::p_store_eid(const STORE_ENTRYID &r)
+{
+	TRY(p_uint32(r.flags));
+	TRY(p_guid(muidStoreWrap));
+	TRY(p_uint8(r.version));
+	TRY(p_uint8(r.ivflag));
+	constexpr char dll[14] = "emsmdb.dll";
+	TRY(p_bytes(dll, std::size(dll)));
+	TRY(p_uint32(r.wrapped_flags));
+	TRY(p_guid(r.wrapped_provider_uid));
+	TRY(p_uint32(r.wrapped_type));
+	TRY(p_str(r.pserver_name));
+	return p_str(r.pmailbox_dn);
+}
+
+static pack_result ext_buffer_push_zmovecopy_action(EXT_PUSH *e,
+    const ZMOVECOPY_ACTION *r)
+{
+	TRY(e->p_bin(r->store_eid));
+	return e->p_bin(r->folder_eid);
+}
+
+static pack_result ext_buffer_push_movecopy_action(EXT_PUSH *pext,
+    const MOVECOPY_ACTION *r)
+{
+	auto &ext = *pext;
+	uint16_t eid_size;
+	
+	TRY(pext->p_uint8(r->same_store));
+	if (r->same_store == 0) {
+		uint32_t offset = ext.m_offset;
+		TRY(pext->advance(sizeof(uint16_t)));
+		if (r->pstore_eid == nullptr)
+			return pack_result::format;
+		TRY(pext->p_store_eid(*r->pstore_eid));
+		uint32_t offset1 = ext.m_offset;
+		eid_size = offset1 - (offset + sizeof(uint16_t));
+		ext.m_offset = offset;
+		TRY(pext->p_uint16(eid_size));
+		ext.m_offset = offset1;
+	} else {
+		TRY(pext->p_uint16(1));
+		TRY(pext->p_uint8(0));
+	}
+	if (r->same_store != 0)
+		return pext->p_svreid(*static_cast<SVREID *>(r->pfolder_eid));
+	else
+		return pext->p_bin(*static_cast<BINARY *>(r->pfolder_eid));
+}
+
+static pack_result ext_buffer_push_zreply_action(EXT_PUSH *e, const ZREPLY_ACTION *r)
+{
+	TRY(e->p_bin(r->message_eid));
+	return e->p_guid(r->template_guid);
+}
+
+static pack_result ext_buffer_push_reply_action(EXT_PUSH *pext,
+    const REPLY_ACTION *r)
+{
+	TRY(pext->p_uint64(r->template_folder_id));
+	TRY(pext->p_uint64(r->template_message_id));
+	return pext->p_guid(r->template_guid);
+}
+
+static pack_result ext_buffer_push_recipient_block(EXT_PUSH *pext,
+    const RECIPIENT_BLOCK *r)
+{
+	if (r->count == 0)
+		return pack_result::format;
+	TRY(pext->p_uint8(r->reserved));
+	TRY(pext->p_uint16(r->count));
+	for (const auto &p : *r)
+		TRY(pext->p_tagged_pv(p));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_push_forwarddelegate_action(EXT_PUSH *pext,
+    const FORWARDDELEGATE_ACTION *r)
+{
+	if (r->count == 0)
+		return pack_result::format;
+	TRY(pext->p_uint16(r->count));
+	for (const auto &rcpt : *r)
+		TRY(ext_buffer_push_recipient_block(pext, &rcpt));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_push_action_block(EXT_PUSH *pext, const ACTION_BLOCK *r)
+{
+	auto &ext = *pext;
+	uint32_t offset = ext.m_offset;
+
+	TRY(pext->advance(sizeof(uint16_t)));
+	TRY(pext->p_uint8(r->type));
+	TRY(pext->p_uint32(r->flavor));
+	TRY(pext->p_uint32(r->flags));
+	switch (r->type) {
+	case OP_MOVE:
+	case OP_COPY:
+		TRY((pext->m_flags & EXT_FLAG_ZCORE) ?
+		    ext_buffer_push_zmovecopy_action(pext, static_cast<ZMOVECOPY_ACTION *>(r->pdata)) :
+		    ext_buffer_push_movecopy_action(pext, static_cast<MOVECOPY_ACTION *>(r->pdata)));
+		break;
+	case OP_REPLY:
+	case OP_OOF_REPLY:
+		TRY((pext->m_flags & EXT_FLAG_ZCORE) ?
+		    ext_buffer_push_zreply_action(pext, static_cast<ZREPLY_ACTION *>(r->pdata)) :
+		    ext_buffer_push_reply_action(pext, static_cast<REPLY_ACTION *>(r->pdata)));
+		break;
+	case OP_DEFER_ACTION: {
+		uint16_t tmp_len = r->length - sizeof(uint8_t) - 2 * sizeof(uint32_t);
+		TRY(pext->p_bytes(r->pdata, tmp_len));
+		break;
+	}
+	case OP_BOUNCE:
+		TRY(pext->p_uint32(*static_cast<uint32_t *>(r->pdata)));
+		break;
+	case OP_FORWARD:
+	case OP_DELEGATE:
+		TRY(ext_buffer_push_forwarddelegate_action(pext, static_cast<FORWARDDELEGATE_ACTION *>(r->pdata)));
+		break;
+	case OP_TAG:
+		TRY(pext->p_tagged_pv(*static_cast<TAGGED_PROPVAL *>(r->pdata)));
+	case OP_DELETE:
+	case OP_MARK_AS_READ:
+		break;
+	default:
+		return pack_result::bad_switch;
+	}
+	uint16_t tmp_len = ext.m_offset - (offset + sizeof(uint16_t));
+	uint32_t offset1 = ext.m_offset;
+	ext.m_offset = offset;
+	TRY(pext->p_uint16(tmp_len));
+	ext.m_offset = offset1;
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_rule_actions(const RULE_ACTIONS &r)
+{
+	if (r.count == 0)
+		return pack_result::format;
+	TRY(p_uint16(r.count));
+	for (const auto &act : r)
+		TRY(ext_buffer_push_action_block(this, &act));
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_propval(uint16_t type, const void *pval)
+{
+	if (m_flags & EXT_FLAG_ABK && (type == PT_STRING8 ||
+	    type == PT_UNICODE || type == PT_BINARY || (type & MV_FLAG))) {
+		if (pval == nullptr)
+			return p_uint8(0);
+		TRY(p_uint8(0xFF));
+	} else if ((type & MVI_FLAG) == MVI_FLAG) {
+		/* convert multi-value instance into single value */
+		type &= ~MVI_FLAG;
+	}
+#define CASE(mt, ct, fu) \
+	case (mt): return fu(*static_cast<const ct *>(pval));
+
+	switch (type) {
+	CASE(PT_UNSPECIFIED, TYPED_PROPVAL, p_typed_pv);
+	CASE(PT_SHORT, uint16_t, p_uint16);
+	case PT_ERROR:
+	CASE(PT_LONG, uint32_t, p_uint32);
+	CASE(PT_FLOAT, float, p_float);
+	case PT_APPTIME:
+	CASE(PT_DOUBLE, double, p_double);
+	CASE(PT_BOOLEAN, uint8_t, p_uint8);
+	case PT_CURRENCY:
+	case PT_SYSTIME:
+	CASE(PT_I8, uint64_t, p_uint64);
+	case PT_STRING8:
+		return p_str(static_cast<const char *>(pval));
+	case PT_UNICODE:
+		return p_wstr(static_cast<const char *>(pval));
+	CASE(PT_CLSID, GUID, p_guid);
+	CASE(PT_SVREID, SVREID, p_svreid);
+	CASE(PT_SRESTRICTION, RESTRICTION, p_restriction);
+	CASE(PT_ACTIONS, RULE_ACTIONS, p_rule_actions);
+	case PT_OBJECT:
+		if (m_flags & EXT_FLAG_ABK)
+			return pack_result::ok;
+		[[fallthrough]];
+	CASE(PT_BINARY, BINARY, p_bin);
+	CASE(PT_MV_SHORT, SHORT_ARRAY, p_uint16_a);
+	CASE(PT_MV_LONG, LONG_ARRAY, p_uint32_a);
+	case PT_MV_CURRENCY:
+	case PT_MV_SYSTIME:
+	CASE(PT_MV_I8, LONGLONG_ARRAY, p_uint64_a);
+	CASE(PT_MV_FLOAT, FLOAT_ARRAY, p_float_a);
+	case PT_MV_APPTIME:
+	CASE(PT_MV_DOUBLE, DOUBLE_ARRAY, p_double_a);
+	CASE(PT_MV_STRING8, STRING_ARRAY, p_str_a);
+	CASE(PT_MV_UNICODE, STRING_ARRAY, p_wstr_a);
+	CASE(PT_MV_CLSID, GUID_ARRAY, p_guid_a);
+	CASE(PT_MV_BINARY, BINARY_ARRAY, p_bin_a);
+	default:
+		mlog(LV_ERR, "E-2901: illegal proptype (%xh) serialized", type);
+		return pack_result::bad_switch;
+	}
+#undef CASE
+}
+
+pack_result EXT_PUSH::p_typed_pv(const TYPED_PROPVAL &r)
+{
+	TRY(p_uint16(r.type));
+	return p_propval(r.type, r.pvalue);
+}
+
+pack_result EXT_PUSH::p_tagged_pv(const TAGGED_PROPVAL &r)
+{
+	TRY(p_uint32(r.proptag));
+	return p_propval(PROP_TYPE(r.proptag), r.pvalue);
+}
+
+pack_result EXT_PUSH::p_longterm(const LONG_TERM_ID &r)
+{
+	TRY(p_guid(r.guid));
+	TRY(p_bytes(r.global_counter.ab, 6));
+	return p_uint16(r.padding);
+}
+
+pack_result EXT_PUSH::p_propname(const PROPERTY_NAME &r)
+{
+	TRY(p_uint8(r.kind));
+	TRY(p_guid(r.guid));
+	if (r.kind == MNID_ID) {
+		TRY(p_uint32(r.lid));
+	} else if (r.kind == MNID_STRING) {
+		uint32_t offset = m_offset;
+		TRY(advance(sizeof(uint8_t)));
+		TRY(p_wstr(r.pname));
+		uint8_t name_size = m_offset - (offset + sizeof(uint8_t));
+		uint32_t offset1 = m_offset;
+		m_offset = offset;
+		TRY(p_uint8(name_size));
+		m_offset = offset1;
+	}
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_tarray_set(const TARRAY_SET &r)
+{
+	TRY(p_uint32(r.count));
+	for (size_t i = 0; i < r.count; ++i)
+		TRY(p_tpropval_a(*r.pparray[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_xid(const XID &xid)
+{
+	if (xid.size < 17 || xid.size > 24)
+		return pack_result::format;
+	TRY(p_guid(xid.guid));
+	return p_bytes(xid.local_id, xid.size - 16);
+}
+
+pack_result EXT_PUSH::p_folder_eid(const FOLDER_ENTRYID &r)
+{
+	TRY(p_uint32(r.flags));
+	TRY(p_guid(r.provider_uid));
+	TRY(p_uint16(r.eid_type));
+	TRY(p_guid(r.folder_dbguid));
+	TRY(p_bytes(r.folder_gc.ab, 6));
+	return p_bytes(r.pad1, 2);
+}
+
+pack_result EXT_PUSH::p_msg_eid(const MESSAGE_ENTRYID &r)
+{
+	TRY(p_uint32(r.flags));
+	TRY(p_guid(r.provider_uid));
+	TRY(p_uint16(r.eid_type));
+	TRY(p_guid(r.folder_dbguid));
+	TRY(p_bytes(r.folder_gc.ab, 6));
+	TRY(p_bytes(r.pad1, 2));
+	TRY(p_guid(r.message_dbguid));
+	TRY(p_bytes(r.message_gc.ab, 6));
+	return p_bytes(r.pad2, 2);
+}
+
+pack_result EXT_PUSH::p_flagged_pv(uint32_t tag, const FLAGGED_PROPVAL &r)
+{
+	uint16_t type = PROP_TYPE(tag);
+	void *pvalue = nullptr;
+	
+	if (type == PT_UNSPECIFIED && !(m_flags & EXT_FLAG_ABK)) {
+		if (FLAGGED_PROPVAL_FLAG_UNAVAILABLE == r.flag) {
+			type = 0;
+		} else if (FLAGGED_PROPVAL_FLAG_ERROR == r.flag) {
+			type = PT_ERROR;
+			pvalue = r.pvalue;
+		} else {
+			type = static_cast<TYPED_PROPVAL *>(r.pvalue)->type;
+			pvalue = static_cast<TYPED_PROPVAL *>(r.pvalue)->pvalue;
+		}
+		TRY(p_uint16(type));
+	} else {
+		pvalue = r.pvalue;
+	}
+	TRY(p_uint8(r.flag));
+	switch (r.flag) {
+	case FLAGGED_PROPVAL_FLAG_AVAILABLE:
+		return p_propval(type, pvalue);
+	case FLAGGED_PROPVAL_FLAG_UNAVAILABLE:
+		return pack_result::ok;
+	case FLAGGED_PROPVAL_FLAG_ERROR:
+		return p_uint32(*static_cast<uint32_t *>(pvalue));
+	default:
+		return pack_result::bad_switch;
+	}
+}
+
+pack_result EXT_PUSH::p_proprow(std::span<const proptag_t> cols, const PROPERTY_ROW &r)
+{
+	if (cols.size() > UINT16_MAX)
+		return pack_result::format;
+	TRY(p_uint8(r.flag));
+	if (PROPERTY_ROW_FLAG_NONE == r.flag) {
+		for (uint16_t i = 0; i < cols.size(); ++i)
+			TRY(p_propval(PROP_TYPE(cols[i]), r.pppropval[i]));
+		return pack_result::ok;
+	} else if (PROPERTY_ROW_FLAG_FLAGGED == r.flag) {
+		for (uint16_t i = 0; i < cols.size(); ++i)
+			TRY(p_flagged_pv(cols[i],
+			         *static_cast<FLAGGED_PROPVAL *>(r.pppropval[i])));
+		return pack_result::ok;
+	}
+	return pack_result::bad_switch;
+}
+
+pack_result EXT_PUSH::p_proprow(const LPROPTAG_ARRAY &cols, const PROPERTY_ROW &r)
+{
+	TRY(p_uint8(r.flag));
+	if (r.flag == PROPERTY_ROW_FLAG_NONE) {
+		for (size_t i = 0; i < cols.cvalues; ++i)
+			TRY(p_propval(PROP_TYPE(cols.pproptag[i]), r.pppropval[i]));
+		return pack_result::ok;
+	} else if (r.flag == PROPERTY_ROW_FLAG_FLAGGED) {
+		for (size_t i = 0; i < cols.cvalues; ++i)
+			TRY(p_flagged_pv(cols.pproptag[i],
+			         *static_cast<FLAGGED_PROPVAL *>(r.pppropval[i])));
+		return pack_result::ok;
+	}
+	return pack_result::bad_switch;
+}
+
+pack_result EXT_PUSH::p_sortorder(const SORT_ORDER &r)
+{
+	TRY(p_uint16(r.type));
+	TRY(p_uint16(r.propid));
+	return p_uint8(r.table_sort);
+}
+
+pack_result EXT_PUSH::p_sortorder_set(const SORTORDER_SET &r)
+{
+	if (r.count == 0 || r.ccategories > r.count || r.cexpanded > r.ccategories)
+		return pack_result::format;
+	TRY(p_uint16(r.count));
+	TRY(p_uint16(r.ccategories));
+	TRY(p_uint16(r.cexpanded));
+	for (size_t i = 0; i < r.count; ++i)
+		TRY(p_sortorder(r.psort[i]));
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_typed_str(const TYPED_STRING &r)
+{
+	TRY(p_uint8(r.string_type));
+	switch (r.string_type) {
+	case STRING_TYPE_NONE:
+	case STRING_TYPE_EMPTY:
+		return pack_result::ok;
+	case STRING_TYPE_STRING8:
+	case STRING_TYPE_UNICODE_REDUCED:
+		return p_str(r.pstring);
+	case STRING_TYPE_UNICODE:
+		return p_wstr(r.pstring);
+	default:
+		return pack_result::bad_switch;
+	}
+}
+
+pack_result EXT_PUSH::p_permission_data(const PERMISSION_DATA &r)
+{
+	TRY(p_uint8(r.flags));
+	return p_tpropval_a(r.propvals);
+}
+
+pack_result EXT_PUSH::p_rule_data(const RULE_DATA &r)
+{
+	TRY(p_uint8(r.flags));
+	return p_tpropval_a(r.propvals);
+}
+
+pack_result EXT_PUSH::p_abk_eid(const EMSAB_ENTRYID_view &r)
+{
+	TRY(p_uint32(r.flags));
+	TRY(p_guid(muidEMSAB));
+	TRY(p_uint32(1));
+	TRY(p_uint32(r.type));
+	return p_str(r.px500dn);
+}
+
+pack_result EXT_PUSH::p_oneoff_eid(const ONEOFF_ENTRYID_view &r)
+{
+	TRY(p_uint32(r.flags));
+	TRY(p_guid(muidOOP));
+	TRY(p_uint16(r.version));
+	TRY(p_uint16(r.ctrl_flags));
+	if (r.ctrl_flags & MAPI_ONE_OFF_UNICODE) {
+		TRY(p_wstr(r.pdisplay_name));
+		TRY(p_wstr(r.paddress_type));
+		return p_wstr(r.pmail_address);
+	} else {
+		TRY(p_str(r.pdisplay_name));
+		TRY(p_str(r.paddress_type));
+		return p_str(r.pmail_address);
+	}
+}
+
+pack_result EXT_PUSH::p_systime(const SYSTEMTIME &r)
+{
+	TRY(p_int16(r.year));
+	TRY(p_int16(r.month));
+	TRY(p_int16(r.dayofweek));
+	TRY(p_int16(r.day));
+	TRY(p_int16(r.hour));
+	TRY(p_int16(r.minute));
+	TRY(p_int16(r.second));
+	return p_int16(r.milliseconds);
+}
+
+pack_result EXT_PUSH::p_tzstruct(const TZSTRUCT &r)
+{
+	TRY(p_int32(r.bias));
+	TRY(p_int32(r.standardbias));
+	TRY(p_int32(r.daylightbias));
+	TRY(p_int16(r.standardyear));
+	TRY(p_systime(r.standarddate));
+	TRY(p_int16(r.daylightyear));
+	return p_systime(r.daylightdate);
+}
+
+static pack_result ext_buffer_push_tzrule(EXT_PUSH *pext, const TZRULE *r)
+{
+	TRY(pext->p_uint8(2));
+	TRY(pext->p_uint8(1));
+	TRY(pext->p_uint16(0x3E));
+	TRY(pext->p_uint16(r->flags));
+	TRY(pext->p_int16(r->year));
+	TRY(pext->p_bytes(r->x, 14));
+	TRY(pext->p_int32(r->bias));
+	TRY(pext->p_int32(r->standardbias));
+	TRY(pext->p_int32(r->daylightbias));
+	TRY(pext->p_systime(r->standarddate));
+	return pext->p_systime(r->daylightdate);
+}
+
+pack_result EXT_PUSH::p_tzdef(const TZDEF &r)
+{
+	uint16_t cbheader;
+	char tmp_buff[262];
+	
+	TRY(p_uint8(2));
+	TRY(p_uint8(1));
+	auto len = utf8_to_utf16le(r.keyname, tmp_buff, std::size(tmp_buff));
+	if (len < 2)
+		return pack_result::charconv;
+	len -= 2;
+	cbheader = 6 + len;
+	TRY(p_uint16(cbheader));
+	TRY(p_uint16(2));
+	TRY(p_uint16(len / 2));
+	TRY(p_bytes(tmp_buff, len));
+	TRY(p_uint16(r.crules));
+	for (size_t i = 0; i < r.crules; ++i)
+		TRY(ext_buffer_push_tzrule(this, &r.prules[i]));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_push_patterntypespecific(EXT_PUSH *pext,
+    uint16_t patterntype, const PATTERNTYPE_SPECIFIC *r)
+{
+	switch (patterntype) {
+	case rptMinute:
+		/* do nothing */
+		return pack_result::ok;
+	case rptWeek:
+		return pext->p_uint32(r->weekrecur);
+	case rptMonth:
+	case rptMonthEnd:
+	case rptHjMonth:
+	case rptHjMonthEnd:
+		return pext->p_uint32(r->dayofmonth);
+	case rptMonthNth:
+	case rptHjMonthNth:
+		TRY(pext->p_uint32(r->monthnth.weekrecur));
+		return pext->p_uint32(r->monthnth.recurnum);
+	default:
+		return pack_result::bad_switch;
+	}
+}
+
+static pack_result ext_buffer_push_recurrencepattern(EXT_PUSH *pext,
+    const RECURRENCE_PATTERN *r)
+{
+	TRY(pext->p_uint16(r->readerversion));
+	TRY(pext->p_uint16(r->writerversion));
+	TRY(pext->p_uint16(r->recurfrequency));
+	TRY(pext->p_uint16(r->patterntype));
+	TRY(pext->p_uint16(r->calendartype));
+	TRY(pext->p_uint32(r->firstdatetime));
+	TRY(pext->p_uint32(r->period));
+	TRY(pext->p_uint32(r->slidingflag));
+	TRY(ext_buffer_push_patterntypespecific(pext, r->patterntype, &r->pts));
+	TRY(pext->p_uint32(r->endtype));
+	TRY(pext->p_uint32(r->occurrencecount));
+	TRY(pext->p_uint32(r->firstdow));
+	TRY(pext->p_uint32(r->deletedinstancecount));
+	for (size_t i = 0; i < r->deletedinstancecount; ++i)
+		TRY(pext->p_uint32(r->pdeletedinstancedates[i]));
+	TRY(pext->p_uint32(r->modifiedinstancecount));
+	for (size_t i = 0; i < r->modifiedinstancecount; ++i)
+		TRY(pext->p_uint32(r->pmodifiedinstancedates[i]));
+	TRY(pext->p_uint32(r->startdate));
+	return pext->p_uint32(r->enddate);
+}
+
+static pack_result ext_buffer_push_exceptioninfo(EXT_PUSH *pext,
+    const EXCEPTIONINFO *r)
+{
+	uint16_t tmp_len;
+	
+	TRY(pext->p_uint32(r->startdatetime));
+	TRY(pext->p_uint32(r->enddatetime));
+	TRY(pext->p_uint32(r->originalstartdate));
+	TRY(pext->p_uint16(r->overrideflags));
+	if (r->overrideflags & ARO_SUBJECT) {
+		tmp_len = strlen(r->subject);
+		TRY(pext->p_uint16(tmp_len + 1));
+		TRY(pext->p_uint16(tmp_len));
+		TRY(pext->p_bytes(r->subject, tmp_len));
+	}
+	if (r->overrideflags & ARO_MEETINGTYPE)
+		TRY(pext->p_uint32(r->meetingtype));
+	if (r->overrideflags & ARO_REMINDERDELTA)
+		TRY(pext->p_uint32(r->reminderdelta));
+	if (r->overrideflags & ARO_REMINDER)
+		TRY(pext->p_uint32(r->reminderset));
+	if (r->overrideflags & ARO_LOCATION) {
+		tmp_len = strlen(r->location);
+		TRY(pext->p_uint16(tmp_len + 1));
+		TRY(pext->p_uint16(tmp_len));
+		TRY(pext->p_bytes(r->location, tmp_len));
+	}
+	if (r->overrideflags & ARO_BUSYSTATUS)
+		TRY(pext->p_uint32(r->busystatus));
+	if (r->overrideflags & ARO_ATTACHMENT)
+		TRY(pext->p_uint32(r->attachment));
+	if (r->overrideflags & ARO_SUBTYPE)
+		TRY(pext->p_uint32(r->subtype));
+	if (r->overrideflags & ARO_APPTCOLOR)
+		TRY(pext->p_uint32(r->appointmentcolor));
+	return pack_result::ok;
+}
+
+static pack_result ext_buffer_push_changehighlight(EXT_PUSH *pext,
+    const CHANGEHIGHLIGHT *r)
+{
+	TRY(pext->p_uint32(r->size));
+	TRY(pext->p_uint32(r->value));
+	if (r->size < sizeof(uint32_t))
+		return pack_result::format;
+	else if (sizeof(uint32_t) == r->size)
+		return pack_result::ok;
+	return pext->p_bytes(r->preserved, r->size - sizeof(uint32_t));
+}
+
+static pack_result ext_buffer_push_extendedexception(EXT_PUSH *pext,
+    uint32_t writerversion2, uint16_t overrideflags, const EXTENDEDEXCEPTION *r)
+{
+	if (writerversion2 >= 0x00003009)
+		TRY(ext_buffer_push_changehighlight(pext, &r->changehighlight));
+	TRY(pext->p_uint32(r->reservedblockee1size));
+	if (r->reservedblockee1size != 0)
+		TRY(pext->p_bytes(r->preservedblockee1, r->reservedblockee1size));
+	if (overrideflags & (ARO_SUBJECT | ARO_LOCATION)) {
+		TRY(pext->p_uint32(r->startdatetime));
+		TRY(pext->p_uint32(r->enddatetime));
+		TRY(pext->p_uint32(r->originalstartdate));
+	}
+	if (overrideflags & ARO_SUBJECT) {
+		auto subj = znul(r->subject);
+		auto tmp_len = strlen(subj) + 1;
+		std::unique_ptr<char[]> pbuff;
+		try {
+			pbuff = std::make_unique<char[]>(2 * tmp_len);
+		} catch (const std::bad_alloc &) {
+			return pack_result::alloc;
+		}
+		auto string_len = utf8_to_utf16le(subj, pbuff.get(), 2 * tmp_len);
+		if (string_len < 2)
+			return pack_result::charconv;
+		if (string_len > UINT16_MAX)
+			string_len = UINT16_MAX;
+		string_len -= 2;
+		TRY(pext->p_uint16(string_len / 2));
+		TRY(pext->p_bytes(pbuff.get(), string_len));
+	}
+	if (overrideflags & ARO_LOCATION) {
+		auto loc = znul(r->location);
+		auto tmp_len = strlen(loc) + 1;
+		std::unique_ptr<char[]> pbuff;
+		try {
+			pbuff = std::make_unique<char[]>(2 * tmp_len);
+		} catch (const std::bad_alloc &) {
+			return pack_result::alloc;
+		}
+		auto string_len = utf8_to_utf16le(loc, pbuff.get(), 2 * tmp_len);
+		if (string_len < 2)
+			return pack_result::charconv;
+		if (string_len > UINT16_MAX)
+			string_len = UINT16_MAX;
+		string_len -= 2;
+		TRY(pext->p_uint16(string_len / 2));
+		TRY(pext->p_bytes(pbuff.get(), string_len));
+	}
+	if (overrideflags & (ARO_LOCATION | ARO_SUBJECT)) {
+		TRY(pext->p_uint32(r->reservedblockee2size));
+		if (r->reservedblockee2size != 0)
+			TRY(pext->p_bytes(r->preservedblockee2, r->reservedblockee2size));
+	}
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_apptrecpat(const APPOINTMENT_RECUR_PAT &r)
+{
+	TRY(ext_buffer_push_recurrencepattern(this, &r.recur_pat));
+	TRY(p_uint32(r.readerversion2));
+	TRY(p_uint32(r.writerversion2));
+	TRY(p_uint32(r.starttimeoffset));
+	TRY(p_uint32(r.endtimeoffset));
+	TRY(p_uint16(r.exceptioncount));
+	for (size_t i = 0; i < r.exceptioncount; ++i)
+		TRY(ext_buffer_push_exceptioninfo(this, &r.pexceptioninfo[i]));
+	TRY(p_uint32(r.reservedblock1size));
+	for (size_t i = 0; i < r.exceptioncount; ++i)
+		TRY(ext_buffer_push_extendedexception(this, r.writerversion2, r.pexceptioninfo[i].overrideflags, &r.pextendedexception[i]));
+	TRY(p_uint32(r.reservedblock2size));
+	if (r.reservedblock2size == 0)
+		return pack_result::ok;
+	return p_bytes(r.preservedblock2, r.reservedblock2size);
+}
+
+pack_result EXT_PUSH::p_goid(const GLOBALOBJECTID &r)
+{
+	TRY(p_guid(r.arrayid));
+	TRY(p_uint8(r.year >> 8));
+	TRY(p_uint8(r.year & 0xFF));
+	TRY(p_uint8(r.month));
+	TRY(p_uint8(r.day));
+	TRY(p_uint64(r.creationtime));
+	TRY(p_bytes(r.x, 8));
+	if (r.unparsed)
+		return p_bytes(r.data);
+	return p_bin_ex(r.data);
+}
+
+static pack_result ext_buffer_push_attachment_list(EXT_PUSH *pext,
+    const ATTACHMENT_LIST *r)
+{
+	int i;
+	
+	TRY(pext->p_uint16(r->count));
+	for (i=0; i<r->count; i++) {
+		TRY(pext->p_tpropval_a(r->pplist[i]->proplist));
+		if (NULL != r->pplist[i]->pembedded) {
+			TRY(pext->p_uint8(1));
+			TRY(pext->p_msgctnt(*r->pplist[i]->pembedded));
+		} else {
+			TRY(pext->p_uint8(0));
+		}
+	}
+	return pack_result::ok;
+}
+
+pack_result EXT_PUSH::p_msgctnt(const MESSAGE_CONTENT &r)
+{
+	TRY(p_tpropval_a(r.proplist));
+	if (r.children.prcpts != nullptr) {
+		TRY(p_uint8(1));
+		TRY(p_tarray_set(*r.children.prcpts));
+	} else {
+		TRY(p_uint8(0));
+	}
+	if (r.children.pattachments != nullptr) {
+		TRY(p_uint8(1));
+		return ext_buffer_push_attachment_list(this, r.children.pattachments);
+	} else {
+		return p_uint8(0);
+	}
+}
+
+uint8_t *EXT_PUSH::release()
+{
+	auto t = m_udata;
+	m_udata = nullptr;
+	m_flags &= ~EXT_FLAG_DYNAMIC;
+	m_offset = 0;
+	return t;
+}
+
+bool emsab_to_parts(EXT_PULL &ser, std::string &type, std::string &addr) try
+{
+	EMSAB_ENTRYID eid;
+	if (ser.g_abk_eid(&eid) != pack_result::ok || eid.type != DT_MAILUSER)
+		return false;
+	type = "EX";
+	addr = std::move(eid.x500dn);
+	return true;
+} catch (const std::bad_alloc &) {
+	mlog(LV_ERR, "%s: ENOMEM", __func__);
+	return false;
+}
+
+bool oneoff_to_parts(EXT_PULL &ser, std::string &type, std::string &addr) try
+{
+	ONEOFF_ENTRYID eid;
+	if (ser.g_oneoff_eid(&eid) != pack_result::ok ||
+	    strcasecmp(eid.paddress_type.c_str(), "SMTP") != 0)
+		return false;
+	type = "SMTP";
+	addr = std::move(eid.pmail_address);
+	return true;
+} catch (const std::bad_alloc &) {
+	mlog(LV_ERR, "%s: ENOMEM", __func__);
+	return false;
+}
+
+freebusy_event::freebusy_event(time_t start, time_t end, uint32_t b_status,
+    const char *ev_id, const char *ev_subject, const char *ev_location,
+    bool ev_meeting, bool ev_recurring, bool ev_exception, bool ev_reminderset,
+    bool ev_private, bool detailed) :
+	start_time(start), end_time(end), busy_status(b_status),
+	has_details(detailed), is_meeting(ev_meeting),
+	is_recurring(ev_recurring), is_exception(ev_exception),
+	is_reminderset(ev_reminderset), is_private(ev_private),
+	m_id(detailed ? znul(ev_id) : ""),
+	m_subject(detailed ? znul(ev_subject) : ""),
+	m_location(detailed ? znul(ev_location) : ""),
+	id(detailed && ev_id != nullptr ? m_id.c_str() : nullptr),
+	subject(detailed && ev_subject != nullptr ? m_subject.c_str() : nullptr),
+	location(detailed && ev_location != nullptr ? m_location.c_str() : nullptr)
+{}
+
+freebusy_event::freebusy_event(const freebusy_event &o) :
+	start_time(o.start_time), end_time(o.end_time),
+	busy_status(o.busy_status), has_details(o.has_details),
+	is_meeting(o.is_meeting), is_recurring(o.is_recurring),
+	is_exception(o.is_exception), is_reminderset(o.is_reminderset),
+	is_private(o.is_private), m_id(o.m_id), m_subject(o.m_subject),
+	m_location(o.m_location),
+	id(o.id != nullptr ? m_id.c_str() : nullptr),
+	subject(o.subject != nullptr ? m_subject.c_str() : nullptr),
+	location(o.location != nullptr ? m_location.c_str() : nullptr)
+{}
