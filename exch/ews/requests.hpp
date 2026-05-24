@@ -57,6 +57,7 @@ EWSFUNC(mRemoveDelegateRequest);
 EWSFUNC(mUpdateDelegateRequest);
 EWSFUNC(mExpandDLRequest);
 EWSFUNC(mResolveNamesRequest);
+EWSFUNC(mGetAppMarketplaceUrlRequest);
 EWSFUNC(mSendItemRequest);
 EWSFUNC(mSetUserOofSettingsRequest);
 EWSFUNC(mSubscribeRequest);
