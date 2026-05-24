@@ -2193,6 +2193,22 @@ void mGetUserConfigurationResponse::serialize(XMLElement *xml) const
 	XMLDUMPM(ResponseMessages);
 }
 
+
+/* ===== AJOUT GetAppMarketplaceUrl ===== */
+
+void mGetAppMarketplaceUrlResponseMessage::serialize(tinyxml2::XMLElement *xml) const
+{
+        mResponseMessageType::serialize(xml);
+        XMLDUMPT(AppMarketplaceUrl);
+}
+
+void mGetAppMarketplaceUrlResponse::serialize(XMLElement *xml) const
+{
+        XMLDUMPM(ResponseMessages);
+}
+
+/* ===== FIN AJOUT ===== */
+
 mUpdateUserConfigurationRequest::mUpdateUserConfigurationRequest(const XMLElement *xml) :
     XMLINIT(UserConfiguration)
 {}
