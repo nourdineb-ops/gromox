@@ -2213,6 +2213,23 @@ void process(mGetUserConfigurationRequest &&request, XMLElement *response, const
 }
 
 /**
+ * @brief      Process GetAppMarketplaceUrl
+ */
+void process(mGetAppMarketplaceUrlRequest &&request, XMLElement *response, const EWSContext &ctx)
+{
+    response->SetName("m:GetAppMarketplaceUrlResponse");
+
+    mGetAppMarketplaceUrlResponse data;
+
+    mGetAppMarketplaceUrlResponseMessage& msg = data.ResponseMessages.emplace_back();
+    msg.ResponseClass = "Success";
+
+    msg.AppMarketplaceUrl = "https://appsource.microsoft.com/";
+
+    data.serialize(response);
+}
+
+/**
  * @brief      Process UpdateUserConfiguration
  *
  * Update XmlData and/or BinaryData properties on an existing
