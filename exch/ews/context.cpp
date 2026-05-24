@@ -2744,7 +2744,7 @@ void EWSContext::updateAttendees(const std::string &dir,
 
 	if (rcpts.count > 0) {
 		if (!exmdb.update_message_instance_rcpts(dir.c_str(),
-		    inst->instanceId, &rcpts))
+				inst->instanceId, &rcpts))
 			throw EWSError::ItemSave(E3351);
 		/* Set organizer properties when attendees are present */
 		std::string dispName;
@@ -2792,8 +2792,164 @@ void EWSContext::updateAttendees(const std::string &dir,
 
 	ec_error_t err;
 	if (!exmdb.flush_instance(dir.c_str(),
-	    inst->instanceId, &err) || err != ecSuccess)
+			inst->instanceId, &err) || err != ecSuccess)
 		throw EWSError::ItemSave(E3355);
+}
+
+/**
+ * @brief      Update message recipients on existing mail item
+ *
+ * Used by UpdateItem when Outlook for Mac updates ToRecipients,
+ * CcRecipients, or BccRecipients on a draft message before sent.
+ * Replaces the recipient table through the message instance API
+ * to ensure recipients are persisted correctly and remain visible
+ * in Sent Items after submission.
+ *
+ * @param      dir             Store directory
+ * @param      parent          Parent folder specification
+ * @param      mid             Message ID of the mail item
+ * @param      toRecipients    XML node containing To recipients
+ * @param      ccRecipients    XML node containing Cc recipients
+ * @param      bccRecipients   XML node containing Bcc recipients
+ */
+
+void EWSContext::updateMessageRecipients(const std::string &dir,
+    const sFolderSpec &parent, uint64_t mid,
+    const tinyxml2::XMLElement *toXml,
+    const tinyxml2::XMLElement *ccXml,
+    const tinyxml2::XMLElement *bccXml) const
+{
+    if (toXml == nullptr && ccXml == nullptr && bccXml == nullptr)
+        return;
+    auto &exmdb = plugin().exmdb;
+
+    auto inst = m_plugin.loadMessageInstance(
+        dir,
+        parent.folderId,
+        mid);
+    if (!inst)
+        throw EWSError::ItemSave(E3351);
+
+    auto rcpts = tarray_set_init();
+    if (rcpts == nullptr)
+        throw EWSError::NotEnoughMemory(E3381);
+    const bool updateTo = toXml != nullptr;
+    const bool updateCc = ccXml != nullptr;
+    const bool updateBcc = bccXml != nullptr;
+    uint16_t old_num = 0;
+    if (!exmdb.get_message_instance_rcpts_num(dir.c_str(), inst->instanceId, &old_num))
+         throw EWSError::ItemSave(E3035);
+    TARRAY_SET old_rcpts{};
+    if (old_num > 0 &&
+        !exmdb.get_message_instance_rcpts(
+            dir.c_str(), inst->instanceId, 0, old_num, &old_rcpts))
+        throw EWSError::ItemSave(E3035);
+
+    for (const auto &oldrow : old_rcpts) {
+        auto rtype = oldrow.get<const uint32_t>(PR_RECIPIENT_TYPE);
+        if (rtype == nullptr)
+            continue;
+        if ((*rtype == MAPI_TO && updateTo) ||
+            (*rtype == MAPI_CC && updateCc) ||
+            (*rtype == MAPI_BCC && updateBcc))
+            continue;
+
+        auto row = rcpts->emplace();
+        if (row == nullptr)
+            throw EWSError::NotEnoughMemory(E3381);
+
+        for (const auto &cell : oldrow) {
+            if (row->set(cell.proptag, cell.pvalue) == ecServerOOM)
+                throw EWSError::NotEnoughMemory(E3381);
+        }
+    }
+
+    auto addRecipients = [&](const tinyxml2::XMLElement *xml, uint32_t type) {
+        if (xml == nullptr)
+            return;
+        for (auto mb = xml->FirstChildElement("Mailbox");
+             mb != nullptr;
+             mb = mb->NextSiblingElement("Mailbox")) {
+            const char *email = nullptr;
+            const char *name = nullptr;
+            if (auto e = mb->FirstChildElement("EmailAddress"))
+                email = e->GetText();
+            if (auto n = mb->FirstChildElement("Name"))
+                name = n->GetText();
+            if (email == nullptr || *email == '\0')
+                continue;
+            tEmailAddressType rcpt;
+            rcpt.EmailAddress = std::string(email);
+            rcpt.RoutingType = std::string("SMTP");
+            if (name && *name)
+                rcpt.Name = std::string(name);
+            auto row = rcpts->emplace();
+            if (row == nullptr)
+                throw EWSError::NotEnoughMemory(E3381);
+            rcpt.mkRecipient(row, type);
+        }
+    };
+    addRecipients(toXml, MAPI_TO);
+    addRecipients(ccXml, MAPI_CC);
+    addRecipients(bccXml, MAPI_BCC);
+    if (rcpts->count == 0)
+        return;
+    MESSAGE_CONTENT *msgctnt = message_content_init();
+    if (msgctnt == nullptr)
+	throw EWSError::NotEnoughMemory(E3381);
+
+    auto prcpts = rcpts->dup();
+    if (prcpts == nullptr)
+	throw EWSError::NotEnoughMemory(E3381);
+
+    std::string displayTo;
+    for (const auto &row : *rcpts) {
+        const char *name = row.get<const char>(PR_DISPLAY_NAME);
+        const char *email = row.get<const char>(PR_EMAIL_ADDRESS);
+        const char *value = (name && *name) ? name : email;
+        if (value == nullptr || *value == '\0')
+           continue;
+        if (!displayTo.empty())
+           displayTo += "; ";
+
+        displayTo += value;
+
+    }
+
+    if (!displayTo.empty()) {
+        if (msgctnt->proplist.set(PR_DISPLAY_TO, displayTo.c_str()) == ecServerOOM ||
+            msgctnt->proplist.set(PR_DISPLAY_TO_A, displayTo.c_str()) == ecServerOOM)
+            throw EWSError::NotEnoughMemory(E3381);
+    }
+
+    msgctnt->set_rcpts_internal(prcpts);
+    PROPTAG_ARRAY proptags{};
+    PROBLEM_ARRAY problems{};
+    if (!exmdb.write_message_instance(
+	dir.c_str(),
+	inst->instanceId,
+	msgctnt,
+	TRUE,
+	&proptags,
+	&problems))
+       throw EWSError::ItemSave(E3351);
+
+    ec_error_t err = ecSuccess;
+    if (!exmdb.flush_instance(dir.c_str(), inst->instanceId, &err) ||
+        err != ecSuccess)
+        throw EWSError::ItemSave(E3355);
+
+    message_content_free(msgctnt);
+    uint16_t check_num = 0;
+    if (!exmdb.get_message_instance_rcpts_num(
+	    dir.c_str(), inst->instanceId, &check_num))
+	throw EWSError::ItemSave(E3035);
+
+    TARRAY_SET check_rcpts{};
+    if (check_num > 0 &&
+        !exmdb.get_message_instance_rcpts(
+            dir.c_str(), inst->instanceId, 0, check_num, &check_rcpts))
+       throw EWSError::ItemSave(E3035);
 }
 
 /**
@@ -2909,7 +3065,7 @@ void EWSContext::applyRecurrence(const std::string &dir, uint64_t mid,
 					exp.init(buf->data(), buf->size(), alloc, EXT_FLAG_UTF16);
 					int64_t tz_off = 0;
 					if (exp.g_tzdef(&tz) == pack_result::ok &&
-					    offset_from_tz(&tz, localStartTime, tz_off))
+							offset_from_tz(&tz, localStartTime, tz_off))
 						appt_local = localStartTime -
 							static_cast<time_t>(tz_off) * 60;
 				}
@@ -3329,9 +3485,12 @@ sFolderSpec EWSContext::resolveFolder(const sMessageEntryId& eid) const
  * @param     content  Message content
  */
 void EWSContext::send(const std::string &dir, uint64_t log_msg_id,
-    const MESSAGE_CONTENT &content) const
+    const MESSAGE_CONTENT &content, const TARRAY_SET *override_rcpts) const
 {
-	if (!content.children.prcpts)
+	const TARRAY_SET *send_rcpts = override_rcpts != nullptr ?
+	    override_rcpts : content.children.prcpts;
+
+	if (send_rcpts == nullptr || send_rcpts->count == 0)
 		throw EWSError::MissingRecipients(E3115);
 	MAIL mail;
 	std::string log_id;
@@ -3352,8 +3511,8 @@ void EWSContext::send(const std::string &dir, uint64_t log_msg_id,
 		throw EWSError::ItemCorrupt(E3116);
 
 	std::vector<std::string> rcpts;
-	rcpts.reserve(content.children.prcpts->count);
-	for (auto &rcpt : *content.children.prcpts) {
+	rcpts.reserve(send_rcpts->count);
+	for (auto &rcpt : *send_rcpts) {
 		tEmailAddressType addr(rcpt);
 		if (!addr.EmailAddress)
 			continue;
