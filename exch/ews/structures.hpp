@@ -254,7 +254,7 @@ struct sFolderSpec {
 		bool isPrivate;
 	};
 
-	static const std::array<DistNameInfo, 21> distNameInfo;
+	static const std::array<DistNameInfo, 25> distNameInfo;
 };
 
 /**
@@ -4608,6 +4608,35 @@ struct mGetUserConfigurationResponseMessage : public mResponseMessageType {
  */
 struct mGetUserConfigurationResponse {
 	std::vector<mGetUserConfigurationResponseMessage> ResponseMessages;
+
+	void serialize(tinyxml2::XMLElement *) const;
+};
+
+/**
+ * Outlook compatibility: GetAppMarketplaceUrl
+ */
+struct mGetAppMarketplaceUrlRequest {
+	explicit mGetAppMarketplaceUrlRequest(const tinyxml2::XMLElement *) {}
+};
+
+/**
+ * Outlook compatibility: GetAppMarketplaceUrl response message
+ */
+struct mGetAppMarketplaceUrlResponseMessage : public mResponseMessageType {
+	static constexpr char NAME[] = "GetAppMarketplaceUrlResponseMessage";
+
+	using mResponseMessageType::mResponseMessageType;
+
+	std::string AppMarketplaceUrl;
+
+	void serialize(tinyxml2::XMLElement *) const;
+};
+
+/**
+ * Outlook compatibility: GetAppMarketplaceUrl response
+ */
+struct mGetAppMarketplaceUrlResponse {
+	std::vector<mGetAppMarketplaceUrlResponseMessage> ResponseMessages;
 
 	void serialize(tinyxml2::XMLElement *) const;
 };
