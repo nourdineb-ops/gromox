@@ -688,6 +688,7 @@ void process(mCreateItemRequest &&request, XMLElement *response, const EWSContex
 	bool send_message = request.MessageDisposition == Enum::SendOnly ||
 	                    request.MessageDisposition == Enum::SendAndSaveCopy;
 
+
 	data.ResponseMessages.reserve(request.Items.size());
 	for (sItem &item : request.Items) try {
 		if (!hasAccess)
@@ -695,7 +696,27 @@ void process(mCreateItemRequest &&request, XMLElement *response, const EWSContex
 
 		mCreateItemResponseMessage msg;
 		bool persist = !(std::holds_alternative<tMessage>(item) && request.MessageDisposition == Enum::SendOnly);
+
 		auto content = ctx.toContent(dir, *targetFolder, item, persist);
+
+		if (std::holds_alternative<tMessage>(item) &&
+		    request.MessageDisposition == Enum::SaveOnly) {
+		   const char *sender = ctx.effectiveUser(*targetFolder);
+		   if (sender == nullptr || *sender == '\0')
+		      sender = ctx.auth_info().username;
+
+		   if (sender != nullptr && *sender != '\0') {
+		      content->proplist.set(PR_SENT_REPRESENTING_ADDRTYPE, "SMTP");
+		      content->proplist.set(PR_SENDER_ADDRTYPE, "SMTP");
+		      content->proplist.set(PR_SENT_REPRESENTING_EMAIL_ADDRESS, sender);
+		      content->proplist.set(PR_SENDER_EMAIL_ADDRESS, sender);
+		      content->proplist.set(PR_SENT_REPRESENTING_SMTP_ADDRESS, sender);
+		      content->proplist.set(PR_SENDER_SMTP_ADDRESS, sender);
+		      content->proplist.set(PR_SENT_REPRESENTING_NAME, sender);
+		      content->proplist.set(PR_SENDER_NAME, sender);
+		   }
+		}
+
 
 		auto updateRef = [&](const tItemId &refId, uint32_t resp) {
 			ctx.assertIdType(refId.type, tItemId::ID_ITEM);
@@ -3052,11 +3073,18 @@ void process(mUpdateItemRequest &&request, XMLElement *response, const EWSContex
 			        shape.write(TAGGED_PROPVAL{tag, deconst(value)});
 			};
 
-			const char *sender = username ? username : ctx.auth_info().username;
+//			const char *sender = username ? username : ctx.auth_info().username;
 
 			ensure_prop(shape, props, PR_MESSAGE_CLASS, "IPM.Note");
 
-			if (sender && *sender) {
+/*			bool is_draft = false;
+
+			if (const TAGGED_PROPVAL *mf = shape.writes(PR_MESSAGE_FLAGS)) {
+				auto flags = *static_cast<const uint32_t *>(mf->pvalue);
+				is_draft = (flags & MSGFLAG_UNSENT) != 0;
+			}
+
+			if (sender && *sender && is_draft) {
 			        ensure_prop(shape, props, PR_SENT_REPRESENTING_ADDRTYPE, "SMTP");
 			        ensure_prop(shape, props, PR_SENDER_ADDRTYPE, "SMTP");
 			        ensure_prop(shape, props, PR_SENT_REPRESENTING_EMAIL_ADDRESS, sender);
@@ -3066,7 +3094,7 @@ void process(mUpdateItemRequest &&request, XMLElement *response, const EWSContex
 			        ensure_prop(shape, props, PR_SENT_REPRESENTING_NAME, sender);
 			        ensure_prop(shape, props, PR_SENDER_NAME, sender);
 			}
-
+*/
 			props = shape.write();
 			PROBLEM_ARRAY problems;
 			if (!ctx.plugin().exmdb.remove_message_properties(dir.c_str(),
