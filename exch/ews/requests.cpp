@@ -3052,7 +3052,20 @@ void process(mUpdateItemRequest &&request, XMLElement *response, const EWSContex
 			        shape.write(TAGGED_PROPVAL{tag, deconst(value)});
 			};
 
+			const char *sender = username ? username : ctx.auth_info().username;
+
 			ensure_prop(shape, props, PR_MESSAGE_CLASS, "IPM.Note");
+
+			if (sender && *sender) {
+			        ensure_prop(shape, props, PR_SENT_REPRESENTING_ADDRTYPE, "SMTP");
+			        ensure_prop(shape, props, PR_SENDER_ADDRTYPE, "SMTP");
+			        ensure_prop(shape, props, PR_SENT_REPRESENTING_EMAIL_ADDRESS, sender);
+			        ensure_prop(shape, props, PR_SENDER_EMAIL_ADDRESS, sender);
+			        ensure_prop(shape, props, PR_SENT_REPRESENTING_SMTP_ADDRESS, sender);
+			        ensure_prop(shape, props, PR_SENDER_SMTP_ADDRESS, sender);
+			        ensure_prop(shape, props, PR_SENT_REPRESENTING_NAME, sender);
+			        ensure_prop(shape, props, PR_SENDER_NAME, sender);
+			}
 
 			props = shape.write();
 			PROBLEM_ARRAY problems;
