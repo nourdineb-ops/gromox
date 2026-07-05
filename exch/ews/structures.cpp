@@ -1885,6 +1885,15 @@ void tCalendarItem::update(const sShape& shape)
 {
 	tItem::update(shape);
 	sCalendarMeetingRequestCommon::update(shape);
+	fromProp(shape.get(NtCalendarIsOrganizer), IsOrganizer);
+	if (!IsOrganizer.has_value()) {
+		const bool isOrganizer =
+		    AppointmentState &&
+		    ((*AppointmentState & asfMeeting) != 0) &&
+		    ((*AppointmentState & asfReceived) == 0);
+
+		IsOrganizer.emplace(isOrganizer);
+	}
 
 	const TAGGED_PROPVAL* prop;
 	if ((prop = shape.get(NtGlobalObjectId))) {
@@ -3687,6 +3696,7 @@ decltype(tFieldURI::nameMap) tFieldURI::nameMap = {
 	{"item:ReminderMinutesBeforeStart", {NtReminderDelta, PT_LONG}},
 	{"meeting:AssociatedCalendarItemId", {NtCleanGlobalObjectId, PT_BINARY}},
 	{"meeting:IsOrganizer", {NtCalendarIsOrganizer, PT_BOOLEAN}},
+	{"calendar:IsOrganizer", {NtCalendarIsOrganizer, PT_BOOLEAN}},
 	{"meeting:IsOutOfDate", {NtMeetingType, PT_LONG}},
 	{"meeting:RecurrenceId", {NtExceptionReplaceTime, PT_SYSTIME}},
 	{"meeting:ResponseType", {NtResponseStatus, PT_LONG}},
