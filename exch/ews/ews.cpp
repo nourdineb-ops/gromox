@@ -475,6 +475,7 @@ static constexpr cfg_directive ews_cfg_defaults[] = {
 	{"ews_experimental", "ews_beta", CFG_ALIAS},
 	{"ews_log_filter", "!"},
 	{"ews_log_timestamp", ""},
+	{"ews_max_pending_events", "4000", CFG_SIZE},
 	{"ews_max_user_photo_size", "5M", CFG_SIZE},
 	{"ews_pretty_response", "0", CFG_BOOL},
 	{"ews_request_logging", "0"},
@@ -523,6 +524,7 @@ void EWSPlugin::loadConfig()
 	event_stream_interval = std::chrono::milliseconds(cfg->get_ll("ews_event_stream_interval"));
 	cache_embedded_instance_lifetime = std::chrono::milliseconds(cfg->get_ll("ews_cache_embedded_instance_lifetime"));
 	max_user_photo_size = cfg->get_ll("ews_max_user_photo_size");
+	max_pending_events = cfg->get_ll("ews_max_pending_events");
 	ver.schema = cfg->get_value("ews_schema_version");
 
 	str = gxcfg->get_value("outgoing_smtp_url");
@@ -817,6 +819,16 @@ void EWSPlugin::event(const char* dir, BOOL, uint32_t ID, const DB_NOTIFY* notif
 	if (mgr == nullptr)
 		return;
 	lock = std::unique_lock(mgr->lock);
+	if (mgr->overflow)
+		/* Wait for the client to re-subscribe */
+		return;
+	if (max_pending_events != 0 && mgr->events.size() >= max_pending_events) {
+		mgr->overflow = true;
+		mgr->events.clear();
+		mlog(LV_DEBUG, "[ews] %s: streaming event backlog exceeded ews_max_pending_events=%u; signalling resync",
+			mgr->username.c_str(), max_pending_events);
+		return;
+	}
 	sTimePoint now(clock::now());
 	auto mkFid = [&](uint64_t fid) {
 		return tFolderId(mkFolderEntryId(mgr->mailboxInfo,
