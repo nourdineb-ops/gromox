@@ -580,6 +580,7 @@ E(3449, "failed to set message id on updated content");
 E(3450, "RecurringMasterId is currently not supported");
 E(3451, "RecurringMasterId is currently not supported");
 E(3452, "RecurringMasterId is currently not supported");
+E(3454, "subscription event backlog exceeded ews_max_pending_events; re-subscribe and resync");
 
 #undef E
 }

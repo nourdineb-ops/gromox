@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only WITH linking exception
-// SPDX-FileCopyrightText: 2021–2025 grommunio GmbH
+// SPDX-FileCopyrightText: 2021–2026 grommunio GmbH
 // This file is part of Gromox.
 /* http parser is a module, which first read data from socket, parses rpc over http and
    relay the stream to pdu processor. it also process other http request
@@ -1539,6 +1539,19 @@ tproc_status http_parser::wrrep_nobuf(http_context *pcontext)
 			return tproc_status::cont;
 		case HPM_RETRIEVE_WAIT:
 			pcontext->sched_stat = hsched_stat::wait;
+			/*
+			 * Close the wakeup race with hpm_processor_wakeup_context():
+			 * a wakeup may have fired after retrieve_response() decided
+			 * to wait but before sched_stat became `wait`, in which case
+			 * its contexts_pool_signal() was a no-op. The latch records
+			 * such a wakeup; consume it and re-poll instead of parking,
+			 * otherwise the context idles forever with an undelivered
+			 * response and never releases its context_num slot.
+			 */
+			if (pcontext->hpm_wakeup_pending.exchange(false)) {
+				pcontext->sched_stat = hsched_stat::wrrep;
+				return tproc_status::loop;
+			}
 			return tproc_status::idle;
 		case HPM_RETRIEVE_DONE:
 			if (pcontext->b_close)
@@ -2189,8 +2202,27 @@ tproc_status http_parser::waitrecycled(http_context *pcontext,
 
 tproc_status http_parser::wait(http_context *pcontext)
 {
-	if (hpm_processor_is_in_charge(pcontext))
+	if (hpm_processor_is_in_charge(pcontext)) {
+		/*
+		 * HPM contexts (EWS GetStreamingEvents, MH-emsmdb
+		 * NotificationWait) park here with no pool-level timeout: the
+		 * contexts-pool scan thread re-queues `idling` contexts every
+		 * second without applying g_time_out (only `polling` contexts
+		 * are timed out). Their sole wakeup is
+		 * hpm_processor_wakeup_context(). Detect a peer that closed
+		 * the connection so the context (and its context_num slot) is
+		 * reclaimed even if such a wakeup was lost; without this,
+		 * parked contexts accumulate until context_num is exhausted
+		 * and gromox-http rejects all new connections until restarted.
+		 */
+		char tmp_buff;
+		if (recv(pcontext->connection.sockd, &tmp_buff,
+		    sizeof(tmp_buff), MSG_PEEK) == 0) {
+			pcontext->log(LV_DEBUG, "connection lost (hpm wait)");
+			return tproc_status::runoff;
+		}
 		return tproc_status::idle;
+	}
 	/* only hpm_processor or out channel can be set to hsched_stat::wait */
 	auto pchannel_out = static_cast<RPC_OUT_CHANNEL *>(pcontext->pchannel);
 	switch (pchannel_out->channel_stat) {
@@ -2316,6 +2348,7 @@ static void http_parser_context_clear(HTTP_CONTEXT *pcontext)
 	ntlm_stop(ctx.ntlm_proc);
 	pcontext->connection.reset();
 	pcontext->sched_stat = hsched_stat::initssl;
+	pcontext->hpm_wakeup_pending = false;
 	pcontext->request.clear();
 	pcontext->stream_in.clear();
 	pcontext->stream_out.clear();

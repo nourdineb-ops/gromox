@@ -475,6 +475,7 @@ static constexpr cfg_directive ews_cfg_defaults[] = {
 	{"ews_experimental", "ews_beta", CFG_ALIAS},
 	{"ews_log_filter", "!"},
 	{"ews_log_timestamp", ""},
+	{"ews_max_pending_events", "4000", CFG_SIZE},
 	{"ews_max_user_photo_size", "5M", CFG_SIZE},
 	{"ews_pretty_response", "0", CFG_BOOL},
 	{"ews_request_logging", "0"},
@@ -523,6 +524,7 @@ void EWSPlugin::loadConfig()
 	event_stream_interval = std::chrono::milliseconds(cfg->get_ll("ews_event_stream_interval"));
 	cache_embedded_instance_lifetime = std::chrono::milliseconds(cfg->get_ll("ews_cache_embedded_instance_lifetime"));
 	max_user_photo_size = cfg->get_ll("ews_max_user_photo_size");
+	max_pending_events = cfg->get_ll("ews_max_pending_events");
 	ver.schema = cfg->get_value("ews_schema_version");
 
 	str = gxcfg->get_value("outgoing_smtp_url");
@@ -817,6 +819,16 @@ void EWSPlugin::event(const char* dir, BOOL, uint32_t ID, const DB_NOTIFY* notif
 	if (mgr == nullptr)
 		return;
 	lock = std::unique_lock(mgr->lock);
+	if (mgr->overflow)
+		/* Wait for the client to re-subscribe */
+		return;
+	if (max_pending_events != 0 && mgr->events.size() >= max_pending_events) {
+		mgr->overflow = true;
+		mgr->events.clear();
+		mlog(LV_DEBUG, "[ews] %s: streaming event backlog exceeded ews_max_pending_events=%u; signalling resync",
+			mgr->username.c_str(), max_pending_events);
+		return;
+	}
 	sTimePoint now(clock::now());
 	auto mkFid = [&](uint64_t fid) {
 		return tFolderId(mkFolderEntryId(mgr->mailboxInfo,
@@ -906,10 +918,20 @@ void EWSPlugin::event(const char* dir, BOOL, uint32_t ID, const DB_NOTIFY* notif
 	default:
 		break;
 	}
-	if (mgr->waitingContext >= 0)
+	if (mgr->waitingContext >= 0) try {
 		// Reschedule next wakeup 0.1 seconds. Should be enough to gather related events.
 		// Is still bound to the ObjectCache cleanup cycle and might take significantly longer than that.
 		cache.get(mgr->waitingContext, std::chrono::milliseconds(100));
+	} catch (const std::out_of_range &) {
+		/*
+		 * The context is linked but not currently parked in the cache
+		 * (between wakeups, or not yet asleep), so there is no wakeup
+		 * entry to bump. The event was already queued above; the 100ms
+		 * fast wake is a best-effort optimisation, so skip it silently
+		 * instead of throwing all the way to the outer handler and
+		 * logging a misleading "Failed to process notification".
+		 */
+	}
 } catch (const std::exception &err) {
 	mlog(LV_ERR, "[ews#evt] %s: Failed to process notification: %s",
 		err.what(), timestamp().c_str());

@@ -1219,8 +1219,17 @@ std::pair<std::list<sNotificationEvent>, bool> EWSContext::getEvents(const tSubs
 	auto mgr = m_plugin.get_submgr(subscriptionId.tsub_rawkey, subscriptionId.timeout);
 	if (mgr == nullptr)
 		throw EWSError::InvalidSubscription(E3202);
+	std::lock_guard evguard(mgr->lock);
 	if (mgr->username != m_auth_info.username)
 		throw EWSError::AccessDenied(E3203);
+	if (mgr->overflow)
+		/*
+		 * Backlog was previously dropped in EWSPlugin::event() because
+		 * the client could not keep up. Fault the subscription to make
+		 * the caller (streaming notify() / pull GetEvents) report it
+		 * in ErrorSubscriptionIds.
+		 */
+		throw EWSError::InvalidSubscription(E3454);
 	std::pair<std::list<sNotificationEvent>, bool> result{{}, mgr->events.size() > 50};
 	auto &evt = mgr->events;
 	if (result.second) {
