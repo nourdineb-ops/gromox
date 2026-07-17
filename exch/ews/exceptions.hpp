@@ -584,6 +584,8 @@ E(3453, "GetItem batch exceeds ews_max_get_items; resend in smaller batches");
 E(3454, "subscription event backlog exceeded ews_max_pending_events; re-subscribe and resync");
 E(3455, "failed to allocate the recipient set while updating attendees");
 E(3456, "failed to set PR_ROWID on an attendee recipient");
+E(3457, "cannot read from item's source folder");
+E(3458, "cannot write to destination folder");
 
 #undef E
 }
