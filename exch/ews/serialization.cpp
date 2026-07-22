@@ -1569,6 +1569,41 @@ void tDeclineItem::serialize(tinyxml2::XMLElement *xml) const
 	XMLDUMPT(ReferenceItemId);
 }
 
+tReplyToItem::tReplyToItem(const tinyxml2::XMLElement *xml) :
+	XMLINIT(ReferenceItemId),
+	XMLINIT(Message)
+{}
+
+void tReplyToItem::serialize(tinyxml2::XMLElement *xml) const
+{
+	XMLDUMPT(ReferenceItemId);
+	XMLDUMPT(Message);
+}
+
+tReplyAllToItem::tReplyAllToItem(const tinyxml2::XMLElement *xml) :
+	XMLINIT(ReferenceItemId),
+	XMLINIT(Message),
+	XMLINIT(IsSpecificMessageReply)
+{}
+
+void tReplyAllToItem::serialize(tinyxml2::XMLElement *xml) const
+{
+	XMLDUMPT(ReferenceItemId);
+	XMLDUMPT(Message);
+	XMLDUMPT(IsSpecificMessageReply);
+}
+
+tForwardItem::tForwardItem(const tinyxml2::XMLElement *xml) :
+	XMLINIT(ReferenceItemId),
+	XMLINIT(Message)
+{}
+
+void tForwardItem::serialize(tinyxml2::XMLElement *xml) const
+{
+	XMLDUMPT(ReferenceItemId);
+	XMLDUMPT(Message);
+}
+
 void tModifiedEvent::serialize(tinyxml2::XMLElement *xml) const
 {
 	tBaseObjectChangedEvent::serialize(xml);
