@@ -338,6 +338,7 @@ class EWSContext {
 	Structures::sFolderSpec resolveFolder(const Structures::sFolderId&) const;
 	Structures::sFolderSpec resolveFolder(const Structures::sMessageEntryId&) const;
 	std::optional<uint64_t> findFolderByClass(const std::string &dir, uint64_t parentFolderId, const char *containerClass) const;
+	const BINARY *findContactPhoto(const std::string &dir, const std::string &email) const;
 	uint64_t resolveOrCreateSpecialFolder(const std::string &dir, uint64_t parentFolderId, uint64_t legacyFolderId, const char *containerClass, unsigned int dispNameTid) const;
 	void send(const std::string &dir, uint64_t log_msg_id, const MESSAGE_CONTENT &, const TARRAY_SET *override_rcpts = nullptr) const;
 	void sendMeetingCancellation(const std::string&, const Structures::sMessageEntryId&, const Structures::sFolderSpec&, bool) const;
