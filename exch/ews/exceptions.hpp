@@ -586,6 +586,7 @@ E(3455, "failed to allocate the recipient set while updating attendees");
 E(3456, "failed to set PR_ROWID on an attendee recipient");
 E(3457, "cannot read from item's source folder");
 E(3458, "cannot write to destination folder");
+E(3459, "access denied: missing Send-As permission on the claimed sender identity");
 
 #undef E
 }
