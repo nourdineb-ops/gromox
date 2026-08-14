@@ -526,21 +526,15 @@ void process(mFindPeopleRequest &&request, XMLElement *response, const EWSContex
 				if (node.fetch_prop(PR_SURNAME, val) == ecSuccess)
 					persona.Surname = std::move(val);
 				/*
-				 * PR_SMTP_ADDRESS is never present in the
-				 * ab_tree node's generic propvals map (unlike
-				 * ResolveNames, which correctly uses this
-				 * dedicated accessor) - fetch_prop() here
-				 * always missed, leaving personas with no
-				 * usable address for Outlook to autocomplete.
-				 * Also: EmailAddress is a nested Mailbox-shaped
-				 * type (Name/EmailAddress/RoutingType/
-				 * MailboxType), not a flat string - a real
-				 * Exchange FindPeople response capture showed
-				 * Outlook expects this exact shape, and rejects
-				 * (silently, still "not found") a flat string.
+				 * EmailAddress is a nested Mailbox-shaped type
+				 * (Name/EmailAddress/RoutingType/MailboxType),
+				 * not a flat string - a real Exchange FindPeople
+				 * response capture showed Outlook expects this
+				 * exact shape, and rejects (silently, still "not
+				 * found") a flat string.
 				 */
-				if (auto email = node.user_info(ab_tree::userinfo::mail_address);
-				    email != nullptr && *email != '\0') {
+				std::string email;
+				if (node.fetch_prop(PR_SMTP_ADDRESS, email) == ecSuccess) {
 					tEmailAddressType addr;
 					addr.Name = persona.DisplayName;
 					addr.EmailAddress = email;
@@ -655,15 +649,9 @@ void process(mGetPersonaRequest &&request, XMLElement *response, const EWSContex
 				ab_tree::ab_node node(it);
 				if (node.hidden() & AB_HIDE_RESOLVE)
 					continue;
-				/*
-				 * PR_SMTP_ADDRESS is never present in the
-				 * ab_tree node's generic propvals map - same
-				 * issue as FindPeople above, but here it meant
-				 * this match check never succeeded for anyone.
-				 */
-				auto email = node.user_info(ab_tree::userinfo::mail_address);
-				if (email == nullptr || *email == '\0' ||
-				    strcasecmp(email, target.c_str()) != 0)
+				std::string email;
+				if (node.fetch_prop(PR_SMTP_ADDRESS, email) != ecSuccess ||
+				    strcasecmp(email.c_str(), target.c_str()) != 0)
 					continue;
 				std::string val;
 				tPersona persona;
