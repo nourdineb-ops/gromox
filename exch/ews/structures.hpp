@@ -4615,35 +4615,6 @@ struct mGetUserConfigurationResponse {
 };
 
 /**
- * Outlook compatibility: GetAppMarketplaceUrl
- */
-struct mGetAppMarketplaceUrlRequest {
-	explicit mGetAppMarketplaceUrlRequest(const tinyxml2::XMLElement *) {}
-};
-
-/**
- * Outlook compatibility: GetAppMarketplaceUrl response message
- */
-struct mGetAppMarketplaceUrlResponseMessage : public mResponseMessageType {
-	static constexpr char NAME[] = "GetAppMarketplaceUrlResponseMessage";
-
-	using mResponseMessageType::mResponseMessageType;
-
-	std::string AppMarketplaceUrl;
-
-	void serialize(tinyxml2::XMLElement *) const;
-};
-
-/**
- * Outlook compatibility: GetAppMarketplaceUrl response
- */
-struct mGetAppMarketplaceUrlResponse {
-	std::vector<mGetAppMarketplaceUrlResponseMessage> ResponseMessages;
-
-	void serialize(tinyxml2::XMLElement *) const;
-};
-
-/**
  * Messages.xsd:2590
  */
 struct mUpdateUserConfigurationRequest {
