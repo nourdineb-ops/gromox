@@ -2057,6 +2057,7 @@ mFindItemRequest::mFindItemRequest(const tinyxml2::XMLElement *xml) :
 	XMLINIT(Restriction),
 	XMLINIT(SortOrder),
 	XMLINIT(ParentFolderIds),
+	XMLINIT(QueryString),
 	XMLINITA(Traversal)
 {}
 
