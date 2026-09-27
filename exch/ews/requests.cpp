@@ -20,7 +20,6 @@
 #include <gromox/algorithm.hpp>
 #include <gromox/clock.hpp>
 #include <gromox/database.h>
-#include <gromox/eid_array.hpp>
 #include <gromox/element_data.hpp>
 #include <gromox/fileio.h>
 #include <gromox/json.hpp>
@@ -1735,7 +1734,7 @@ static RESTRICTION *ftsIdsToRestriction(const std::vector<uint64_t> &ids)
 		r.prop->propval.proptag = PidTagMid;
 		/* The index stores the bare message_id (GC value); exmdb reports
 		 * PidTagMid as a full EID, so encode it the same way. */
-		r.prop->propval.pvalue = EWSContext::construct<uint64_t>(rop_util_make_eid_ex(1, ids[i]));
+		r.prop->propval.pvalue = EWSContext::construct<uint64_t>(eid_t(1, ids[i]));
 	}
 	return orRes;
 }
@@ -2077,18 +2076,18 @@ void process(mGetFolderRequest &&request, XMLElement *response, const EWSContext
 		 * new mailbox, create) them on first request instead of
 		 * letting a missing reserved ID hard-error the whole request.
 		 */
-		if (folder.folderId == rop_util_make_eid_ex(1, PRIVATE_FID_RECIPIENT_CACHE))
+		if (folder.folderId == eid_t(1, PRIVATE_FID_RECIPIENT_CACHE))
 			folder.folderId = ctx.resolveOrCreateSpecialFolder(dir,
-			                  rop_util_make_eid_ex(1, PRIVATE_FID_CONTACTS),
+			                  eid_t(1, PRIVATE_FID_CONTACTS),
 			                  folder.folderId, "IPF.Contact.RecipientCache",
 			                  PRIVATE_FID_RECIPIENT_CACHE);
-		else if (folder.folderId == rop_util_make_eid_ex(1, PRIVATE_FID_ARCHIVE))
+		else if (folder.folderId == eid_t(1, PRIVATE_FID_ARCHIVE))
 			folder.folderId = ctx.resolveOrCreateSpecialFolder(dir,
-			                  rop_util_make_eid_ex(1, PRIVATE_FID_IPMSUBTREE),
+			                  eid_t(1, PRIVATE_FID_IPMSUBTREE),
 			                  folder.folderId, nullptr, PRIVATE_FID_ARCHIVE);
-		else if (folder.folderId == rop_util_make_eid_ex(1, PRIVATE_FID_CONVERSATION_HISTORY))
+		else if (folder.folderId == eid_t(1, PRIVATE_FID_CONVERSATION_HISTORY))
 			folder.folderId = ctx.resolveOrCreateSpecialFolder(dir,
-			                  rop_util_make_eid_ex(1, PRIVATE_FID_IPMSUBTREE),
+			                  eid_t(1, PRIVATE_FID_IPMSUBTREE),
 			                  folder.folderId, nullptr, PRIVATE_FID_CONVERSATION_HISTORY,
 			                  true);
 		if (!(ctx.permissions(dir, folder.folderId) & frightsVisible))
