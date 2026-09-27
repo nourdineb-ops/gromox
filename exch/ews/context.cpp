@@ -3643,7 +3643,7 @@ std::optional<uint64_t> EWSContext::findFolderByClass(const std::string &dir,
 	if (eid == nullptr || eid->cb == 0)
 		return std::nullopt;
 	sFolderEntryId folderEid(eid->pb, eid->cb);
-	return rop_util_make_eid_ex(1, rop_util_gc_to_value(folderEid.folder_gc));
+	return eid_t(1, rop_util_gc_to_value(folderEid.folder_gc));
 }
 
 /**
@@ -3683,7 +3683,7 @@ std::optional<uint64_t> EWSContext::findFolderByName(const std::string &dir,
 		if (eid == nullptr || eid->cb == 0)
 			continue;
 		sFolderEntryId folderEid(eid->pb, eid->cb);
-		return rop_util_make_eid_ex(1, rop_util_gc_to_value(folderEid.folder_gc));
+		return eid_t(1, rop_util_gc_to_value(folderEid.folder_gc));
 	}
 	return std::nullopt;
 }
