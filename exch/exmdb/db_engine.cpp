@@ -51,6 +51,7 @@
 #include <gromox/util.hpp>
 #include <gromox/fileio.h>
 #include "db_engine.hpp"
+#include "fts.hpp"
 #include "notification_agent.hpp"
 #define MAX_DYNAMIC_NODES				100
 
@@ -802,6 +803,8 @@ db_handle db_base::get_db(const char* dir, DB_TYPE type)
 	ret = gx_sql_exec(db, type == DB_MAIN ? "PRAGMA synchronous=FULL" : "PRAGMA synchronous=OFF");
 	if (ret != SQLITE_OK)
 		/* keep going with existing mode */;
+	if (type == DB_MAIN && m_fts && !fts_handle_setup(db, dir))
+		/* index is repaired at the next store open */;
 	return hdb;
 }
 
@@ -853,6 +856,11 @@ void db_base::ctor2_and_open(const char *dir)
 	db_engine_provision_folders(hdb.get(), dir);
 	if (exmdb_server::is_private())
 		db_engine_load_dynamic_list(this, hdb.get());
+	if (exmdb_server::is_private() && g_exmdb_fts) {
+		m_fts = fts_handle_setup(hdb.get(), dir);
+		if (m_fts)
+			fts_store_opened(dir);
+	}
 
 	/* ...don't let it go to waste */
 	mx_sqlite.emplace_back(std::move(hdb));
@@ -1404,6 +1412,10 @@ int db_engine_run()
 		pthread_setname_np(tid, buf);
 		g_sfpop_thrids.push_back(tid);
 	}
+	if (fts_run() != 0) {
+		db_engine_stop();
+		return -6;
+	}
 	return 0;
 }
 
@@ -1418,6 +1430,7 @@ static void async_db_clean(size_t tid, decltype(g_hash_table)::iterator iter, si
 
 void db_engine_stop()
 {
+	fts_stop();
 	if (!g_dbeng_stop) {
 		g_dbeng_stop = true;
 		g_waken_cond.notify_all();
