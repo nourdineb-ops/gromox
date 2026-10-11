@@ -473,7 +473,7 @@ static errno_t clear_rwz()
 /* TEMPORARY local test helper, not for commit */
 static errno_t ftstest(int argc, char **argv)
 {
-	if (argc < 4) { fprintf(stderr, "ftstest fid(hex gcv) tag(hex) needle [flags]\n"); return EINVAL; }
+	if (argc < 4) { fprintf(stderr, "ftstest fid(hex gcv) {tag(hex)|aqs|att} needle [flags [noidx [sort]]]\n"); return EINVAL; }
 	eid_t fid(1, strtoull(argv[1], nullptr, 16));
 	proptag_t tag = strtoul(argv[2], nullptr, 16);
 	uint32_t fl = argc >= 5 ? strtoul(argv[4], nullptr, 0) : (FL_SUBSTRING | FL_IGNORECASE);
@@ -502,6 +502,14 @@ static errno_t ftstest(int argc, char **argv)
 		}
 		r = {RES_OR, {&aqs_or}};
 	}
+	/* tag "att": attachment:<needle>, i.e. a subrestriction on the attachment names */
+	RESTRICTION_CONTENT att_rc = {fl, PR_ATTACH_LONG_FILENAME, {PT_UNICODE, argv[3]}};
+	RESTRICTION_SUBOBJ att_sub = {PR_MESSAGE_ATTACHMENTS, {RES_CONTENT, {&att_rc}}};
+	RESTRICTION att_or[2] = {{RES_SUBRESTRICTION, {&att_sub}}, {RES_CONTENT, {&dummy}}};
+	RESTRICTION_AND_OR att_oro = {2, att_or};
+	if (strcmp(argv[2], "att") == 0)
+		r = argc >= 6 && strcmp(argv[5], "noidx") == 0 ?
+		    RESTRICTION{RES_OR, {&att_oro}} : att_or[0];
 	static constexpr SORT_ORDER so_d[] = {{PT_SYSTIME, PROP_ID(PR_MESSAGE_DELIVERY_TIME), TABLE_SORT_DESCEND}};
 	static constexpr SORTORDER_SET so = {1, 0, 0, deconst(so_d)};
 	bool sorted = argc >= 7 && strcmp(argv[6], "sort") == 0;
