@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <chrono>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2022–2026 grommunio GmbH
 // This file is part of Gromox.
@@ -467,6 +469,65 @@ static errno_t clear_rwz()
 	return 0;
 }
 
+
+/* TEMPORARY local test helper, not for commit */
+static errno_t ftstest(int argc, char **argv)
+{
+	if (argc < 4) { fprintf(stderr, "ftstest fid(hex gcv) tag(hex) needle [flags]\n"); return EINVAL; }
+	eid_t fid(1, strtoull(argv[1], nullptr, 16));
+	proptag_t tag = strtoul(argv[2], nullptr, 16);
+	uint32_t fl = argc >= 5 ? strtoul(argv[4], nullptr, 0) : (FL_SUBSTRING | FL_IGNORECASE);
+	RESTRICTION_CONTENT rc = {fl, tag, {PT_UNICODE, argv[3]}};
+	RESTRICTION r = {RES_CONTENT, {&rc}};
+	RESTRICTION_CONTENT dummy = {FL_FULLSTRING, PR_MESSAGE_CLASS, {PT_UNICODE, deconst("x-no-such-class-ftstest")}};
+	RESTRICTION orl[2] = {{RES_CONTENT, {&rc}}, {RES_CONTENT, {&dummy}}};
+	RESTRICTION_AND_OR oro = {2, orl};
+	if (argc >= 6 && strcmp(argv[5], "noidx") == 0)
+		r = {RES_OR, {&oro}};
+	/* tag "aqs": the restriction EWS builds for an unprefixed AQS term */
+	static constexpr proptag_t aqs_tags[] = {PR_SUBJECT, PR_BODY,
+		PR_SENDER_NAME, PR_SENDER_SMTP_ADDRESS, PR_SENT_REPRESENTING_NAME,
+		PR_SENT_REPRESENTING_SMTP_ADDRESS, PR_DISPLAY_TO, PR_DISPLAY_CC};
+	RESTRICTION_CONTENT aqs_rc[std::size(aqs_tags)];
+	RESTRICTION aqs_r[std::size(aqs_tags)+1];
+	RESTRICTION_AND_OR aqs_or = {std::size(aqs_tags), aqs_r};
+	if (strcmp(argv[2], "aqs") == 0) {
+		for (size_t i = 0; i < std::size(aqs_tags); ++i) {
+			aqs_rc[i] = {fl, aqs_tags[i], {aqs_tags[i], argv[3]}};
+			aqs_r[i] = {RES_CONTENT, {&aqs_rc[i]}};
+		}
+		if (argc >= 6 && strcmp(argv[5], "noidx") == 0) {
+			aqs_r[std::size(aqs_tags)] = {RES_CONTENT, {&dummy}};
+			++aqs_or.count;
+		}
+		r = {RES_OR, {&aqs_or}};
+	}
+	static constexpr SORT_ORDER so_d[] = {{PT_SYSTIME, PROP_ID(PR_MESSAGE_DELIVERY_TIME), TABLE_SORT_DESCEND}};
+	static constexpr SORTORDER_SET so = {1, 0, 0, deconst(so_d)};
+	bool sorted = argc >= 7 && strcmp(argv[6], "sort") == 0;
+	uint32_t table_id = 0, rowcount = 0;
+	auto t0 = std::chrono::steady_clock::now();
+	if (!exmdb_client->load_content_table(g_storedir, CP_UTF8, fid,
+	    nullptr, 0, &r, sorted ? &so : nullptr, &table_id, &rowcount))
+		return EIO;
+	auto t1 = std::chrono::steady_clock::now();
+	auto cl_0 = HX::make_scope_exit([&]() { exmdb_client->unload_table(g_storedir, table_id); });
+	static constexpr proptag_t qt[] = {PidTagMid};
+	TARRAY_SET rowset{};
+	if (!exmdb_client->query_table(g_storedir, nullptr, CP_UTF8, table_id, qt, 0, rowcount, &rowset))
+		return EIO;
+	std::vector<unsigned long long> ids;
+	for (unsigned int i = 0; i < rowset.count; ++i) {
+		auto mid = rowset.pparray[i]->get<const eid_t>(PidTagMid);
+		if (mid != nullptr) ids.push_back(mid->gcv());
+	}
+	std::sort(ids.begin(), ids.end());
+	printf("rows=%u time=%.3fs ids=", rowcount, std::chrono::duration<double>(t1 - t0).count());
+	for (auto i : ids) printf("%llu,", i);
+	printf("\n");
+	return 0;
+}
+
 static int single_user_wrap(int argc, char **argv)
 {
 	using namespace global;
@@ -583,6 +644,8 @@ int cmd_parser(int argc, char **argv)
 		return delstoreprop(argc, argv, PSETID_Gromox, "photo", PT_BINARY);
 	else if (strcmp(argv[0], "clear-rwz") == 0)
 		return clear_rwz();
+	else if (strcmp(argv[0], "ftstest") == 0)
+		return ftstest(argc, argv);
 	else if (strcmp(argv[0], "get-photo") == 0)
 		return showstoreprop(argc, argv, PSETID_Gromox, "photo", PT_BINARY);
 	else if (strcmp(argv[0], "set-photo") == 0)
