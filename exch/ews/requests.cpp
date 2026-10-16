@@ -1137,8 +1137,7 @@ void process(mCreateItemRequest &&request, XMLElement *response, const EWSContex
 		 * the error makes the client abandon the already-saved item.
 		 */
 		bool cal_invite = std::holds_alternative<tCalendarItem>(item) &&
-		                  content->children.prcpts != nullptr &&
-		                  content->children.prcpts->count > 0;
+		                  ctx.has_rcpt_address(*content);
 		if (cal_invite &&
 		    request.SendMeetingInvitations == Enum::SendToAllAndSaveCopy) {
 			sFolderSpec sentitems = ctx.resolveFolder(tDistinguishedFolderId(Enum::sentitems));
@@ -3941,8 +3940,7 @@ void process(mUpdateItemRequest &&request, XMLElement *response, const EWSContex
 			auto cls = sendcontent->proplist.get<const char>(PR_MESSAGE_CLASS);
 			if (cls != nullptr &&
 			    class_match_prefix(cls, "IPM.Appointment") == 0 &&
-			    sendcontent->children.prcpts != nullptr &&
-			    sendcontent->children.prcpts->count > 0) {
+			    ctx.has_rcpt_address(*sendcontent)) {
 				if (*request.SendMeetingInvitationsOrCancellations == Enum::SendToAllAndSaveCopy ||
 				    *request.SendMeetingInvitationsOrCancellations == Enum::SendToChangedAndSaveCopy) {
 					sFolderSpec sentitems = ctx.resolveFolder(tDistinguishedFolderId(Enum::sentitems));
