@@ -2234,14 +2234,15 @@ void tCalendarItem::update(const sShape& shape)
 	tItem::update(shape);
 	sCalendarMeetingRequestCommon::update(shape);
 	fromProp(shape.get(NtCalendarIsOrganizer), IsOrganizer);
-	if (!IsOrganizer.has_value()) {
-		const bool isOrganizer =
-		    AppointmentState &&
-		    ((*AppointmentState & asfMeeting) != 0) &&
-		    ((*AppointmentState & asfReceived) == 0);
-
-		IsOrganizer.emplace(isOrganizer);
-	}
+	/*
+	 * Only answer when the appointment state was loaded: the owner
+	 * organizes every item in the calendar that was not received,
+	 * including appointments without attendees.
+	 */
+	if (auto tag = shape.tag(NtAppointmentStateFlags);
+	    !IsOrganizer.has_value() && tag != 0 && shape.requested(tag))
+		IsOrganizer.emplace(!AppointmentState ||
+		                    (*AppointmentState & asfReceived) == 0);
 
 	const TAGGED_PROPVAL* prop;
 	if ((prop = shape.get(NtGlobalObjectId))) {
@@ -4230,6 +4231,7 @@ decltype(tFieldURI::nameMap) tFieldURI::nameMap = {
 	{"meeting:AssociatedCalendarItemId", {NtCleanGlobalObjectId, PT_BINARY}},
 	{"meeting:IsOrganizer", {NtCalendarIsOrganizer, PT_BOOLEAN}},
 	{"calendar:IsOrganizer", {NtCalendarIsOrganizer, PT_BOOLEAN}},
+	{"calendar:IsOrganizer", {NtAppointmentStateFlags, PT_LONG}},
 	{"meeting:IsOutOfDate", {NtMeetingType, PT_LONG}},
 	{"meeting:RecurrenceId", {NtExceptionReplaceTime, PT_SYSTIME}},
 	{"meeting:ResponseType", {NtResponseStatus, PT_LONG}},
