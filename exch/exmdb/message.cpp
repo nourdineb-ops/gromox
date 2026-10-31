@@ -1495,7 +1495,7 @@ ec_error_t exmdb_execute_deferred_send(const char *dir, uint64_t mid_val) try
 	if (rcpt_list.empty())
 		return MAPI_E_NO_RECIPIENTS;
 
-	MAIL imail;
+	auto vmail = vmime::make_shared<vmime::message>();
 	g_sqlite_for_oxcmail = pdb->psqlite;
 	auto log_id = dir + ":m"s + std::to_string(mid_val);
 	oxcmail_converter cvt;
@@ -1504,12 +1504,12 @@ ec_error_t exmdb_execute_deferred_send(const char *dir, uint64_t mid_val) try
 	cvt.get_propids = message_get_propids;
 	cvt.get_propname = message_get_propname;
 	cvt.use_format_override(*ctnt);
-	auto ok = cvt.mapi_to_inet(*ctnt, imail);
+	auto err = cvt.mapi_to_inet(*ctnt, vmail);
 	g_sqlite_for_oxcmail = nullptr;
-	if (!ok)
-		return ecError;
+	if (err != ecSuccess)
+		return err;
 
-	auto ret = cu_send_mail(std::move(imail), g_exmdb_smtp_url.c_str(),
+	auto ret = cu_send_vmail(std::move(vmail), g_exmdb_smtp_url.c_str(),
 	           ev_from, rcpt_list);
 	if (ret != ecSuccess) {
 		mlog(LV_ERR, "E-1760: deferred send %s:m%llu via SMTP failed: %s",
