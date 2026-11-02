@@ -266,6 +266,9 @@ extern int deferred_run(defer_role);
 extern void deferred_stop();
 extern void deferred_sched_arm(const char *dir, uint64_t mid_val, time_t due);
 extern void deferred_sched_cancel(const char *dir, uint64_t mid_val);
+/* Seconds to wait before retrying a failed send, or 0 when retries are used up. */
+extern time_t deferred_retry_delay(const char *dir, uint64_t mid_val);
+extern void deferred_retry_forget(const char *dir, uint64_t mid_val);
 /* Read a store's deferred_sends table and arm the scheduler for each row. */
 extern void deferred_arm_store(const char *dir);
 /* Whether any deferred send is queued (keeps a split-mode worker alive). */
