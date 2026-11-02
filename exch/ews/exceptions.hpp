@@ -682,6 +682,10 @@ E(3610, "failed to delete the Outlook rule blob");
 E(3611, "failed to write the inbox rules");
 E(3612, "the inbox rule limit has been reached");
 E(3613, "user configuration message has no entry id");
+E(3614, "failed to allocate a message ID in the outbox for a deferred send");
+E(3615, "failed to move the message to the outbox for a deferred send");
+E(3616, "failed to schedule the deferred send");
+E(3617, "deferred send was refused (message already submitted)");
 
 #undef E
 }

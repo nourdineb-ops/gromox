@@ -1667,7 +1667,9 @@ void process(mCreateItemRequest &&request, XMLElement *response, const EWSContex
 			content->proplist.set(PR_READ, &byte_value_one);
 		}
 		/* Send first so that a failed send leaves no copy behind */
-		if (isMessageLike && !isResponse && send_message)
+		bool deferred = isMessageLike && !isResponse && send_message &&
+		                props_to_defer_interval(content->proplist) != 0;
+		if (isMessageLike && !isResponse && send_message && !deferred)
 			ctx.send(dir, 0, *content);
 		if (persist) {
 			/* Exchange returns the IDs of attachments it was given */
@@ -1722,6 +1724,12 @@ void process(mCreateItemRequest &&request, XMLElement *response, const EWSContex
 			ctx.markInvited(dir, *targetFolder, messageId);
 			if (!msg.Items.empty())
 				refresh_changekey(ctx, dir, messageId, msg.Items.back());
+		}
+		if (deferred) {
+			uint64_t storedMid = 0;
+			if (auto pmid = content->proplist.get<const uint64_t>(PidTagMid); pmid != nullptr && persist)
+				storedMid = *pmid;
+			ctx.deferSend(dir, storedMid, *content);
 		}
 		if (cal_invite &&
 		    request.SendMeetingInvitations == Enum::SendOnlyToAll) {
@@ -4943,6 +4951,11 @@ void process(mSendItemRequest &&request, XMLElement *response, const EWSContext 
 		} else if (folder.location == sFolderSpec::PRIVATE) {
 			saveFid = eid_t(1, PRIVATE_FID_SENT_ITEMS);
 		}
+		/* A deferred send is filed in Sent Items by exmdb once it is due */
+		if (ctx.deferSend(dir, meid.messageId(), *content)) {
+			data.ResponseMessages.emplace_back().success();
+			continue;
+		}
 		ctx.send(dir, meid.messageId().gcv(), *content);
 
 		/* Exchange moves the sent item to the save folder or drops it */
@@ -5195,6 +5208,9 @@ static void process_upditem_2(mUpdateItemRequest &request, const EWSContext &ctx
 	    sendcontent == nullptr)
 		throw EWSError::ItemNotFound(E3466);
 	ctx.validate_sendas_perms(*sendcontent);
+	/* A deferred send is filed in Sent Items by exmdb once it is due */
+	if (ctx.deferSend(dir, mid.messageId(), *sendcontent))
+		return;
 	ctx.send(dir, mid.messageId().gcv(), *sendcontent);
 
 	if (*request.MessageDisposition == Enum::SendAndSaveCopy) {

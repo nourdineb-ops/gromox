@@ -375,6 +375,7 @@ class EWSContext {
 	void send(const std::string &dir, uint64_t log_msg_id, const MESSAGE_CONTENT &) const;
 	std::vector<TAGGED_PROPVAL> submitIdentity(const std::string &dir, const TPROPVAL_ARRAY &, std::vector<proptag_t> &) const;
 	void stampSubmitIdentity(const std::string &dir, MESSAGE_CONTENT &) const;
+	bool deferSend(const std::string &dir, uint64_t message_id, const MESSAGE_CONTENT &) const;
 	void sendMeetingCancellation(const std::string&, const Structures::sMessageEntryId&, const Structures::sFolderSpec&, bool, std::optional<uint32_t> = std::nullopt) const;
 	void sendOccurrenceUpdate(const std::string &, const Structures::sMessageEntryId &, const Structures::sFolderSpec &, bool, uint32_t) const;
 	void suppressReadReceipt(const Structures::tItemId&) const;
