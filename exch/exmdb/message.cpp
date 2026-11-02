@@ -1419,24 +1419,50 @@ ec_error_t exmdb_execute_deferred_send(const char *dir, uint64_t mid_val) try
 	if (!pdb)
 		return ecError;
 
+	auto drop_row = [&]() {
+		char q[160];
+		snprintf(q, std::size(q), "DELETE FROM deferred_sends "
+			"WHERE message_id=%llu", LLU{mid_val});
+		pdb->exec(q);
+	};
+	/* Any failure from here on hands the message back to the user as unsent. */
+	auto fail = [&](ec_error_t code, const char *what) {
+		mlog(LV_ERR, "E-1991: deferred send %s:m%llu: %s (%s); "
+			"message marked as unsent", dir, LLU{mid_val}, what,
+			mapi_strerror(code));
+		exmdb_server::clear_submit(dir, eid_t(1, mid_val), TRUE);
+		return code;
+	};
+
 	/*
-	 * Claim the job by deleting its row first, so a racing clear_submit
-	 * loses and a crash hereafter cannot re-send (at-most-once). Recheck the
-	 * message in the same transaction.
+	 * Claim the job by marking its row as in flight (due_time 0), so a racing
+	 * clear_submit loses. A row that is still in flight when we get here again
+	 * means the process died while sending. Whether the mail left is unknown,
+	 * so it is not sent a second time; the message is handed back as unsent.
 	 */
 	uint64_t parent_fid = 0;
-	bool present = false;
+	bool present = false, interrupted = false;
 	{
 		auto xact = gx_sql_begin(pdb->psqlite, txn_mode::write);
 		if (!xact)
 			return ecError;
 		char q[160];
-		snprintf(q, std::size(q), "DELETE FROM deferred_sends "
+		snprintf(q, std::size(q), "SELECT due_time FROM deferred_sends "
 			"WHERE message_id=%llu", LLU{mid_val});
-		if (pdb->exec(q) != SQLITE_OK)
-			return ecError;
-		if (sqlite3_changes(pdb->psqlite) != 1)
-			return ecSuccess; /* cancelled or already claimed */
+		{
+			auto st = pdb->prep(q);
+			if (st == nullptr)
+				return ecError;
+			if (st.step() != SQLITE_ROW)
+				return ecSuccess; /* cancelled or already claimed */
+			interrupted = st.col_int64(0) == 0;
+		}
+		if (!interrupted) {
+			snprintf(q, std::size(q), "UPDATE deferred_sends SET due_time=0 "
+				"WHERE message_id=%llu", LLU{mid_val});
+			if (pdb->exec(q) != SQLITE_OK)
+				return ecError;
+		}
 		snprintf(q, std::size(q), "SELECT parent_fid FROM messages "
 			"WHERE message_id=%llu AND is_deleted=0", LLU{mid_val});
 		auto st = pdb->prep(q);
@@ -1447,26 +1473,38 @@ ec_error_t exmdb_execute_deferred_send(const char *dir, uint64_t mid_val) try
 		if (xact.commit() != SQLITE_OK)
 			return ecError;
 	}
-	if (!present)
+	if (interrupted) {
+		mlog(LV_ERR, "E-1990: deferred send %s:m%llu was interrupted "
+			"(restart?) and may or may not have been delivered; "
+			"not sending it again, message marked as unsent",
+			dir, LLU{mid_val});
+		if (present)
+			exmdb_server::clear_submit(dir, eid_t(1, mid_val), TRUE);
+		else
+			drop_row();
+		return ecSuccess;
+	}
+	if (!present) {
+		drop_row();
 		return ecNotFound;        /* deleted after scheduling */
-	if (parent_fid != PRIVATE_FID_OUTBOX)
+	}
+	if (parent_fid != PRIVATE_FID_OUTBOX) {
+		drop_row();
 		return ecSuccess;         /* moved out of the Outbox = cancelled */
+	}
 
 	unsigned int uid = 0;
 	std::string actor;
 	if (!mysql_adaptor_get_id_from_maildir(dir, &uid) ||
-	    mysql_adaptor_userid_to_name(uid, actor) != ecSuccess) {
-		mlog(LV_ERR, "deferred send %s:m%llu: cannot resolve store owner",
-			dir, LLU{mid_val});
-		return ecError;
-	}
+	    mysql_adaptor_userid_to_name(uid, actor) != ecSuccess)
+		return fail(ecError, "cannot resolve store owner");
 
 	MESSAGE_CONTENT *ctnt = nullptr;
 	if (!message_read_message(*pdb, CP_ACP, mid_val, &ctnt) || ctnt == nullptr)
-		return ecError;
+		return fail(ecError, "cannot read the message");
 	auto prcpts = ctnt->children.prcpts;
 	if (prcpts == nullptr || prcpts->count == 0)
-		return MAPI_E_NO_RECIPIENTS;
+		return fail(MAPI_E_NO_RECIPIENTS, "no recipients");
 
 	std::string delegator;
 	auto xret = defer_extract_delegator(*ctnt, delegator);
@@ -1490,10 +1528,10 @@ ec_error_t exmdb_execute_deferred_send(const char *dir, uint64_t mid_val) try
 		TPROPVAL_ARRAY pv = {rcpt.count, rcpt.ppropval};
 		if (cu_rcpt_to_list(std::move(pv), g_exmdb_org_name, rcpt_list,
 		    mysql_adaptor_userid_to_name, b_resend) != ecSuccess)
-			return ecError;
+			return fail(ecError, "cannot expand recipients");
 	}
 	if (rcpt_list.empty())
-		return MAPI_E_NO_RECIPIENTS;
+		return fail(MAPI_E_NO_RECIPIENTS, "no deliverable recipients");
 
 	auto vmail = vmime::make_shared<vmime::message>();
 	g_sqlite_for_oxcmail = pdb->psqlite;
@@ -1507,16 +1545,33 @@ ec_error_t exmdb_execute_deferred_send(const char *dir, uint64_t mid_val) try
 	auto err = cvt.mapi_to_inet(*ctnt, vmail);
 	g_sqlite_for_oxcmail = nullptr;
 	if (err != ecSuccess)
-		return err;
+		return fail(err, "cannot convert the message to MIME");
 
 	auto ret = cu_send_vmail(std::move(vmail), g_exmdb_smtp_url.c_str(),
 	           ev_from, rcpt_list);
 	if (ret != ecSuccess) {
+		/* Retry a few times with a growing delay before giving up. */
+		auto delay = deferred_retry_delay(dir, mid_val);
+		if (delay > 0) {
+			auto due = time(nullptr) + delay;
+			char q[160];
+			snprintf(q, std::size(q), "UPDATE deferred_sends SET due_time=%lld "
+				"WHERE message_id=%llu", static_cast<long long>(due),
+				LLU{mid_val});
+			if (pdb->exec(q) == SQLITE_OK) {
+				mlog(LV_WARN, "E-1992: deferred send %s:m%llu via SMTP failed: "
+					"%s; retrying in %lld s", dir, LLU{mid_val},
+					mapi_strerror(ret), static_cast<long long>(delay));
+				deferred_sched_arm(dir, mid_val, due);
+				return ret;
+			}
+		}
 		mlog(LV_ERR, "E-1760: deferred send %s:m%llu via SMTP failed: %s",
 			dir, LLU{mid_val}, mapi_strerror(ret));
 		exmdb_server::clear_submit(dir, eid_t(1, mid_val), TRUE);
 		return ret;
 	}
+	deferred_retry_forget(dir, mid_val);
 	mlog(LV_INFO, "gromox-audit: deferred message sent from <%s> in mailbox %s",
 		ev_from, dir);
 
@@ -1525,18 +1580,22 @@ ec_error_t exmdb_execute_deferred_send(const char *dir, uint64_t mid_val) try
 	auto del_after = ctnt->proplist.get<const uint8_t>(PR_DELETE_AFTER_SUBMIT);
 	eid_t mid_eid = eid_t(1, mid_val);
 	EID_ARRAY ids = {1, &mid_eid};
-	BOOL partial = false;
+	BOOL partial = false, filed;
 	if (del_after != nullptr && *del_after != 0)
-		exmdb_server::delete_messages(dir, CP_ACP, nullptr,
+		filed = exmdb_server::delete_messages(dir, CP_ACP, nullptr,
 			eid_t(1, parent_fid), &ids, TRUE, &partial);
 	else
 		/*
 		 * NB: Filing always targets Sent Items. PR_SENTMAIL_ENTRYID and the
 		 * represented mailbox copy are not honored for deferred sends.
 		 */
-		exmdb_server::movecopy_messages(dir, CP_ACP, false, nullptr,
+		filed = exmdb_server::movecopy_messages(dir, CP_ACP, false, nullptr,
 			eid_t(1, parent_fid), eid_t(1, PRIVATE_FID_SENT_ITEMS),
 			false, &ids, &partial);
+	if (!filed || partial)
+		mlog(LV_ERR, "E-1993: deferred send %s:m%llu was delivered, but the "
+			"message could not be filed; it stays in the Outbox", dir,
+			LLU{mid_val});
 	return ecSuccess;
 } catch (const std::bad_alloc &) {
 	mlog(LV_ERR, "%s: ENOMEM", __func__);

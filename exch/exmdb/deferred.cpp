@@ -53,6 +53,8 @@ static std::condition_variable g_cv;
 static pthread_t g_thr{};
 static gromox::atomic_bool g_stop{true};
 static defer_role g_role = defer_role::executor;
+static std::map<std::pair<std::string, uint64_t>, unsigned int> g_retries;
+static constexpr time_t g_retry_backoff[] = {60, 300, 900};
 
 static void defer_erase(uint64_t mid, const char *dir)
 {
@@ -74,6 +76,25 @@ void deferred_sched_arm(const char *dir, uint64_t mid_val, time_t due) try
 } catch (const std::bad_alloc &) {
 	mlog(LV_ERR, "%s: ENOMEM arming deferred send for %s:m%llu",
 		__func__, dir, static_cast<unsigned long long>(mid_val));
+}
+
+time_t deferred_retry_delay(const char *dir, uint64_t mid_val) try
+{
+	std::lock_guard lk(g_lock);
+	auto key = std::make_pair(std::string(dir), mid_val);
+	auto &used = g_retries[key];
+	if (used < std::size(g_retry_backoff))
+		return g_retry_backoff[used++];
+	g_retries.erase(key);
+	return 0;
+} catch (const std::bad_alloc &) {
+	return 0;
+}
+
+void deferred_retry_forget(const char *dir, uint64_t mid_val)
+{
+	std::lock_guard lk(g_lock);
+	g_retries.erase(std::make_pair(std::string(dir), mid_val));
 }
 
 void deferred_sched_cancel(const char *dir, uint64_t mid_val)
