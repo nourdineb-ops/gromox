@@ -255,7 +255,7 @@ struct sFolderSpec {
 		bool isPrivate;
 	};
 
-	static const std::array<DistNameInfo, 23> distNameInfo;
+	static const std::array<DistNameInfo, 24> distNameInfo;
 };
 
 /**
