@@ -1277,8 +1277,13 @@ void process(mCreateItemRequest &&request, XMLElement *response, const EWSContex
 				throw EWSError::ItemNotFound(E3391);
 			ctx.send(dir, messageId, *sendcontent);
 		}
-		if (std::holds_alternative<tMessage>(item) && send_message)
-			ctx.send(dir, 0, *content);
+		if (std::holds_alternative<tMessage>(item) && send_message) {
+			uint64_t storedMid = 0;
+			if (auto pmid = content->proplist.get<const uint64_t>(PidTagMid); pmid != nullptr && persist)
+				storedMid = *pmid;
+			if (!ctx.deferSend(dir, storedMid, *content))
+				ctx.send(dir, 0, *content);
+		}
 		if (cal_invite &&
 		    request.SendMeetingInvitations == Enum::SendOnlyToAll) {
 			auto now = EWSContext::construct<uint64_t>(rop_util_current_nttime());
@@ -3807,6 +3812,11 @@ void process(mSendItemRequest &&request, XMLElement *response, const EWSContext 
 		    &content) || content == nullptr)
 			throw EWSError::ItemNotFound(E3403);
 		ctx.validate_sendas_perms(*content);
+		/* A deferred send is filed in Sent Items by exmdb once it is due */
+		if (ctx.deferSend(dir, meid.messageId(), *content)) {
+			data.ResponseMessages.emplace_back().success();
+			continue;
+		}
 		ctx.send(dir, rop_util_get_gc_value(meid.messageId()), *content);
 
 		if (request.SaveItemToFolder)
@@ -3975,6 +3985,9 @@ static void process_upditem_2(mUpdateItemRequest &request, const EWSContext &ctx
 	    sendcontent == nullptr)
 		throw EWSError::ItemNotFound(E3466);
 	ctx.validate_sendas_perms(*sendcontent);
+	/* A deferred send is filed in Sent Items by exmdb once it is due */
+	if (ctx.deferSend(dir, mid.messageId(), *sendcontent))
+		return;
 	ctx.send(dir, rop_util_get_gc_value(mid.messageId()), *sendcontent);
 
 	if (*request.MessageDisposition == Enum::SendAndSaveCopy) {

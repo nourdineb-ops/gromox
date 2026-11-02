@@ -4043,6 +4043,59 @@ bool EWSContext::has_rcpt_address(const MESSAGE_CONTENT &content)
  * @param     dir      Home directory the message is associtated with
  * @param     content  Message content
  */
+/**
+ * @brief      Hand a message that carries a deferred send time to exmdb
+ *
+ * Like the MAPI submit paths, park the message in the Outbox and let
+ * try_mark_submit record the due time. exmdb sends the message when the time
+ * arrives and files it in Sent Items. EWSContext::send() would deliver at once.
+ *
+ * @param      dir         Home directory of the store
+ * @param      message_id  ID of the stored message (any folder), or 0 if the
+ *                         message is not stored yet
+ * @param      content     Message content
+ *
+ * @return     true if the send was deferred (the caller must not send or
+ *             file a copy), false if no deferral is requested
+ */
+bool EWSContext::deferSend(const std::string &dir, uint64_t message_id,
+    const MESSAGE_CONTENT &content) const
+{
+	if (props_to_defer_interval(content.proplist) == 0)
+		return false;
+	if (!content.children.prcpts)
+		throw EWSError::MissingRecipients(E3115);
+	sFolderSpec outbox = resolveFolder(tDistinguishedFolderId(Enum::outbox));
+	const auto &exmdb = m_plugin.exmdb;
+
+	uint64_t outboxMid = 0;
+	if (message_id == 0) {
+		auto item = create(dir, outbox, content);
+		auto id = std::visit([](const auto &i) { return i.ItemId; }, item);
+		if (!id)
+			throw EWSError::InternalServerError(E3612);
+		outboxMid = sMessageEntryId(id->Id.data(), id->Id.size()).messageId();
+	} else {
+		if (!exmdb.allocate_message_id(dir.c_str(), outbox.folderId, &outboxMid))
+			throw EWSError::InternalServerError(E3610);
+		BOOL result = false;
+		if (!exmdb.movecopy_message(dir.c_str(), CP_ACP, message_id,
+		    outbox.folderId, outboxMid, true, &result) || !result)
+			throw EWSError::MoveCopyFailed(E3611);
+	}
+	BOOL marked = false;
+	if (!exmdb.try_mark_submit(dir.c_str(), outboxMid, &marked))
+		throw EWSError::InternalServerError(E3612);
+	if (!marked)
+		throw EWSError::InternalServerError(E3613);
+
+	auto actor = get_auth_info(m_ctx_id).username;
+	auto subject = content.proplist.get<const char>(PR_SUBJECT);
+	mlog(LV_INFO, "ews-audit: %s scheduled message \"%s\" for deferred send in mailbox %s",
+		znul(actor), txt2cstr(subject).c_str(), znul(m_auth_info.username));
+	return true;
+}
+
 void EWSContext::send(const std::string &dir, uint64_t log_msg_id,
     const MESSAGE_CONTENT &content) const
 {
