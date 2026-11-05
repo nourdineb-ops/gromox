@@ -690,6 +690,15 @@ BOOL exmdb_server::delete_messages(const char *dir, cpid_t cpid,
 		sqlite3_reset(pstmt1);
 		if (!b_hard && !is_assoc)
 			timeindex_delete(pdb->psqlite, parent_fid, tmp_val);
+		/* Deleting a message cancels its pending deferred send. */
+		if (exmdb_server::is_private()) {
+			char dq[96];
+			snprintf(dq, std::size(dq), "DELETE FROM deferred_sends "
+				"WHERE message_id=%llu", LLU{tmp_val});
+			if (pdb->exec(dq) != SQLITE_OK)
+				return FALSE;
+			deferred_sched_cancel(dir, tmp_val);
+		}
 
 		mlog(LV_INFO, "exmdb-audit: %s-deleted message %s:f%llu:m%llu (actor:%s)",
 			b_hard ? "hard" : "soft", dir, LLU{src_val}, LLU{tmp_val},
@@ -1488,9 +1497,9 @@ ec_error_t exmdb_execute_deferred_send(const char *dir, uint64_t mid_val) try
 		drop_row();
 		return ecNotFound;        /* deleted after scheduling */
 	}
-	if (parent_fid != PRIVATE_FID_OUTBOX) {
+	if (parent_fid != PRIVATE_FID_OUTBOX && parent_fid != PRIVATE_FID_DRAFT) {
 		drop_row();
-		return ecSuccess;         /* moved out of the Outbox = cancelled */
+		return ecSuccess;         /* moved elsewhere (e.g. deleted) = cancelled */
 	}
 
 	unsigned int uid = 0;
@@ -1594,7 +1603,7 @@ ec_error_t exmdb_execute_deferred_send(const char *dir, uint64_t mid_val) try
 			false, &ids, &partial);
 	if (!filed || partial)
 		mlog(LV_ERR, "E-1993: deferred send %s:m%llu was delivered, but the "
-			"message could not be filed; it stays in the Outbox", dir,
+			"message could not be filed; it stays where it was", dir,
 			LLU{mid_val});
 	return ecSuccess;
 } catch (const std::bad_alloc &) {
