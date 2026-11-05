@@ -638,6 +638,7 @@ E(3610, "failed to allocate a message ID in the outbox for a deferred send");
 E(3611, "failed to move the message to the outbox for a deferred send");
 E(3612, "failed to schedule the deferred send");
 E(3613, "deferred send was refused (message already submitted)");
+E(3614, "could not flag the deferred message as pending");
 
 #undef E
 }

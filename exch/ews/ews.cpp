@@ -955,6 +955,9 @@ void EWSPlugin::event(const char* dir, BOOL, uint32_t ID, const DB_NOTIFY* notif
 		break;
 	}
 	case db_notify_type::message_copied: {
+		/* A copy is a new item in the destination: clients such as Outlook only look for CreatedEvent */
+		mgr->events.emplace_back(aCreatedEvent(now,
+			mkMid(evt.folder_id, evt.message_id), mkFid(evt.folder_id)));
 		mgr->events.emplace_back(aCopiedEvent(now,
 			mkMid(evt.folder_id, evt.message_id),
 			mkFid(evt.folder_id),

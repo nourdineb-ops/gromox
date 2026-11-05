@@ -3716,6 +3716,20 @@ uint64_t EWSContext::moveCopyItem(const std::string& dir, const sMessageEntryId&
 	    meid.messageId(), newParent, newId, copy ? false : TRUE,
 	    &success) || !success)
 		throw EWSError::MoveCopyFailed(E3183);
+	if (copy) {
+		/* A copy never inherits a pending submission (the client reopens it as a draft) */
+		void *pv = nullptr;
+		if (exmdb.get_message_property(dir.c_str(), nullptr, CP_ACP,
+		    newId, PR_MESSAGE_FLAGS, &pv) && pv != nullptr &&
+		    (*static_cast<uint32_t *>(pv) & MSGFLAG_SUBMITTED)) {
+			uint32_t flags = (*static_cast<uint32_t *>(pv) & ~MSGFLAG_SUBMITTED) | MSGFLAG_UNSENT;
+			TAGGED_PROPVAL fprop = {PR_MESSAGE_FLAGS, &flags};
+			TPROPVAL_ARRAY fprops = {1, &fprop};
+			PROBLEM_ARRAY fproblems;
+			exmdb.set_message_properties(dir.c_str(), nullptr, CP_ACP,
+				newId, &fprops, &fproblems);
+		}
+	}
 	return newId;
 }
 
@@ -4046,9 +4060,11 @@ bool EWSContext::has_rcpt_address(const MESSAGE_CONTENT &content)
 /**
  * @brief      Hand a message that carries a deferred send time to exmdb
  *
- * Like the MAPI submit paths, park the message in the Outbox and let
- * try_mark_submit record the due time. exmdb sends the message when the time
- * arrives and files it in Sent Items. EWSContext::send() would deliver at once.
+ * A message that is already stored stays where it is (normally Drafts) under
+ * its ItemId, as on Exchange, so that the client can still address it to
+ * cancel the send. A new message is created in the Outbox. try_mark_submit
+ * records the due time; exmdb sends the message when the time arrives and
+ * files it in Sent Items. EWSContext::send() would deliver at once.
  *
  * @param      dir         Home directory of the store
  * @param      message_id  ID of the stored message (any folder), or 0 if the
@@ -4068,26 +4084,28 @@ bool EWSContext::deferSend(const std::string &dir, uint64_t message_id,
 	sFolderSpec outbox = resolveFolder(tDistinguishedFolderId(Enum::outbox));
 	const auto &exmdb = m_plugin.exmdb;
 
-	uint64_t outboxMid = 0;
+	uint64_t outboxMid = message_id;
 	if (message_id == 0) {
 		auto item = create(dir, outbox, content);
 		auto id = std::visit([](const auto &i) { return i.ItemId; }, item);
 		if (!id)
 			throw EWSError::InternalServerError(E3612);
 		outboxMid = sMessageEntryId(id->Id.data(), id->Id.size()).messageId();
-	} else {
-		if (!exmdb.allocate_message_id(dir.c_str(), outbox.folderId, &outboxMid))
-			throw EWSError::InternalServerError(E3610);
-		BOOL result = false;
-		if (!exmdb.movecopy_message(dir.c_str(), CP_ACP, message_id,
-		    outbox.folderId, outboxMid, true, &result) || !result)
-			throw EWSError::MoveCopyFailed(E3611);
 	}
 	BOOL marked = false;
 	if (!exmdb.try_mark_submit(dir.c_str(), outboxMid, &marked))
 		throw EWSError::InternalServerError(E3612);
 	if (!marked)
 		throw EWSError::InternalServerError(E3613);
+	/* Like Exchange, a pending deferred message still reads as a draft */
+	auto flags = content.proplist.get<const uint32_t>(PR_MESSAGE_FLAGS);
+	uint32_t newflags = (flags != nullptr ? *flags : 0) | MSGFLAG_SUBMITTED | MSGFLAG_UNSENT;
+	TAGGED_PROPVAL fprop = {PR_MESSAGE_FLAGS, &newflags};
+	TPROPVAL_ARRAY fprops = {1, &fprop};
+	PROBLEM_ARRAY fproblems;
+	if (!exmdb.set_message_properties(dir.c_str(), nullptr, CP_ACP,
+	    outboxMid, &fprops, &fproblems))
+		throw EWSError::InternalServerError(E3614);
 
 	auto actor = get_auth_info(m_ctx_id).username;
 	auto subject = content.proplist.get<const char>(PR_SUBJECT);
