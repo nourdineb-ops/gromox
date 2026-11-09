@@ -3226,8 +3226,23 @@ struct tSubscriptionId {
 	explicit tSubscriptionId(gromox::time_duration timeout);
 	explicit tSubscriptionId(const tinyxml2::XMLElement *);
 
+	/**
+	 * Everything needed to re-create the subscription after a restart. It
+	 * is carried inside the ID (and re-validated on use), so a client that still
+	 * holds an ID from before a restart can keep streaming.
+	 */
+	struct Recovery {
+		uint32_t uhash = 0; ///< Hash of the subscribing user name
+		uint16_t mask = 0; ///< Event mask
+		bool all = false; ///< Whole folder tree
+		std::vector<uint64_t> fids; ///< Folders (empty: whole mailbox)
+		static uint32_t hash(std::string_view);
+	};
+
 	detail::SubscriptionKey tsub_rawkey = 0; ///< Counter value. 0 is reserved, 1 is first valid value.
 	gromox::time_duration timeout = std::chrono::minutes(30); ///< subscription timeout
+	std::optional<Recovery> recov; ///< Recovery data (authenticated)
+	std::string text; ///< Original ID text when parsed from a request
 
 	void serialize(tinyxml2::XMLElement *) const;
 	constexpr inline bool operator==(const tSubscriptionId &o) const { return tsub_rawkey == o.tsub_rawkey; }

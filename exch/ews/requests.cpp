@@ -3677,20 +3677,22 @@ void process(mGetStreamingEventsRequest &&request, XMLElement *response, EWSCont
 	mGetStreamingEventsResponseMessage& msg = data.ResponseMessages.emplace_back();
 
 	ctx.enableEventStream(request.ConnectionTimeout);
-	for (const tSubscriptionId &subscription : request.SubscriptionIds)
+	for (const tSubscriptionId &subscription : request.SubscriptionIds) {
+		ctx.recoverSubscription(subscription); /* no-op unless the server forgot it */
 		if (!ctx.streamEvents(subscription))
 			msg.ErrorSubscriptionIds.emplace_back(subscription);
+	}
 	if (msg.ErrorSubscriptionIds.empty()) {
 		msg.success();
 		msg.ConnectionStatus = Enum::OK;
 	} else {
 		/*
-		 * A faulted subscription (e.g. event backlog overflow, see
-		 * EWSPlugin::event()) never becomes valid again on its own.
-		 * The client must Subscribe anew and resync.
+		 * Same answer as Exchange gives for a subscription it does not know
+		 * (e.g. after a server restart): ErrorSubscriptionNotFound, listing
+		 * the offending IDs, with no ConnectionStatus. Clients take this as
+		 * the cue to subscribe anew.
 		 */
-		msg.error("ErrorInvalidSubscription", "Subscription is invalid.");
-		msg.ConnectionStatus = Enum::Closed;
+		msg.error("ErrorSubscriptionNotFound", "The specified subscription was not found.");
 	}
 
 	data.serialize(response);

@@ -136,6 +136,7 @@ class EWSPlugin {
 
 	void event(const char*, BOOL, uint32_t, const DB_NOTIFY*) const;
 	bool linkSubscription(const Structures::tSubscriptionId&, const EWSContext&) const;
+	bool hasSubscription(const Structures::tSubscriptionId &id) const { return get_submgr(id.tsub_rawkey, id.timeout) != nullptr; }
 	std::shared_ptr<ExmdbInstance> loadAttachmentInstance(const std::string&, uint64_t, uint64_t, uint32_t) const;
 	std::shared_ptr<ExmdbInstance> loadEmbeddedInstance(const std::string &, const std::shared_ptr<ExmdbInstance> &) const;
 	std::shared_ptr<ExmdbInstance> loadMessageInstance(const std::string&, uint64_t, uint64_t) const;
@@ -391,6 +392,7 @@ class EWSContext {
 	BINARY serialize(const XID&) const;
 	const char *culture() const;
 	bool streamEvents(const Structures::tSubscriptionId&) const;
+	bool recoverSubscription(const Structures::tSubscriptionId&) const;
 	void rcpt_add_unique(TARRAY_SET *, gromox::EWS::Structures::tEmailAddressType, uint32_t) const;
 	message_content_ptr toContent(const std::string &, std::string &) const;
 	message_content_ptr toContent(const std::string &, const Structures::sFolderSpec &, Structures::sCreateItem &, bool) const;

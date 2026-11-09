@@ -7878,8 +7878,14 @@ tSubscriptionId EWSContext::subscribe(const std::vector<sFolderId> &folderIds,
     uint16_t eventMask, bool all, time_duration timeout) const
 {
 	tSubscriptionId subscriptionId(timeout);
+	tSubscriptionId::Recovery recov;
+	recov.uhash = tSubscriptionId::Recovery::hash(m_auth_info.username);
+	recov.mask = eventMask;
+	recov.all = all;
+	bool recoverable = true;
 	auto mgr = m_plugin.make_submgr(subscriptionId, m_auth_info.username);
 	if (folderIds.empty()) {
+		subscriptionId.recov = std::move(recov);
 		mgr->mailboxInfo = getMailboxInfo(m_auth_info.maildir, false);
 		mgr->inner_subs.emplace_back(m_plugin.subscribe(m_auth_info.maildir,
 			eventMask, true, eid_t(1, PRIVATE_FID_IPMSUBTREE),
@@ -7892,8 +7898,12 @@ tSubscriptionId EWSContext::subscribe(const std::vector<sFolderId> &folderIds,
 		sFolderSpec folderspec = std::visit([&](const auto& fid){return resolveFolder(fid);}, f);
 		if (!folderspec.target)
 			folderspec.target = m_auth_info.username;
+		if (folderspec.location == folderspec.PUBLIC)
+			recoverable = false;
 		if (target.empty()) {
 			target = *folderspec.target;
+			if (target != m_auth_info.username)
+				recoverable = false; /* foreign mailbox: not recoverable */
 			maildir = get_maildir(*folderspec.target);
 			mgr->mailboxInfo = getMailboxInfo(maildir, folderspec.location == folderspec.PUBLIC);
 		} else if (target != *folderspec.target) {
@@ -7902,12 +7912,56 @@ tSubscriptionId EWSContext::subscribe(const std::vector<sFolderId> &folderIds,
 		if (!(permissions(maildir, folderspec.folderId) & frightsReadAny))
 			continue; // TODO: proper error handling
 		mgr->folders.emplace(eid_t(folderspec.folderId).gcv());
+		recov.fids.push_back(folderspec.folderId);
 	}
 	/* Filtered in EWSPlugin::event */
 	if (!mgr->folders.empty())
 		mgr->inner_subs.emplace_back(m_plugin.subscribe(maildir,
 			eventMask, true, 0, subscriptionId.tsub_rawkey));
+	if (recoverable)
+		subscriptionId.recov = std::move(recov);
 	return subscriptionId;
+}
+
+/**
+ * @brief      Re-create a streaming subscription that the server forgot
+ *
+ * The subscription ID carries (authenticated) everything needed to build the
+ * subscription again, so clients keep streaming across a server restart
+ * without having to subscribe anew.
+ *
+ * @param      id    Subscription ID as sent by the client
+ *
+ * @return     true if the subscription exists afterwards
+ */
+bool EWSContext::recoverSubscription(const tSubscriptionId &id) const try
+{
+	static std::mutex recoverLock;
+	if (!id.recov.has_value() ||
+	    id.recov->uhash != tSubscriptionId::Recovery::hash(m_auth_info.username))
+		return false;
+	std::lock_guard lock(recoverLock);
+	if (m_plugin.hasSubscription(id))
+		return true;
+	const auto &r = *id.recov;
+	/* Recovery is limited to the caller's own mailbox */
+	std::string maildir = m_auth_info.maildir;
+	auto mgr = m_plugin.make_submgr(id, m_auth_info.username);
+	mgr->mailboxInfo = getMailboxInfo(maildir, false);
+	if (r.fids.empty()) {
+		mgr->inner_subs.emplace_back(m_plugin.subscribe(maildir,
+			r.mask, true, eid_t(1, PRIVATE_FID_IPMSUBTREE), id.tsub_rawkey));
+		return true;
+	}
+	for (uint64_t fid : r.fids) {
+		if (!(permissions(maildir, fid) & frightsReadAny))
+			continue;
+		mgr->inner_subs.emplace_back(m_plugin.subscribe(maildir,
+			r.mask, r.all, fid, id.tsub_rawkey));
+	}
+	return true;
+} catch (...) {
+	return false;
 }
 
 /**

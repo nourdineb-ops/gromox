@@ -4,6 +4,9 @@
 /**
  * @brief      Implementation of EWS structure (de-)serialization
  */
+#include <cstring>
+#include <random>
+#include <array>
 #include <cstdint>
 #include <ctime>
 #include <libHX/endian.h>
@@ -1997,26 +2000,122 @@ void tSmtpDomain::serialize(XMLElement *xml) const
 	XMLDUMPT(IncludeSubdomains);
 }
 
+namespace {
+
+/**
+ * Subscription IDs are 56 opaque bytes, like those of Exchange: counter and
+ * timeout, a per-process nonce, and filler derived from both. The nonce makes
+ * IDs from before a restart unrecognizable (key 0 is never found), instead of
+ * colliding with the counter, which restarts at 1.
+ */
+constexpr size_t sub_id_size = 56;
+
+const std::array<uint8_t, 16> &sub_id_nonce()
+{
+	static const std::array<uint8_t, 16> nonce = [] {
+		std::array<uint8_t, 16> n;
+		std::random_device rd;
+		for (auto &b : n)
+			b = static_cast<uint8_t>(rd());
+		return n;
+	}();
+	return nonce;
+}
+
+/**
+ * Subscription IDs stay 56 bytes. Bytes 24.. may carry recovery data (marker,
+ * event mask, "all" flag, up to two folders, hash of the user name) that lets
+ * the server re-create a subscription it has forgotten, e.g. after a restart.
+ * The data is not trusted: recovery repeats the checks of a plain Subscribe
+ * (authenticated user, folder permissions) and never grants more.
+ */
+constexpr uint8_t sub_id_magic[2] = {0x47, 0x52};
+constexpr size_t sub_id_max_fids = 2;
+
+}
+
+uint32_t tSubscriptionId::Recovery::hash(std::string_view v)
+{
+	uint32_t h = 2166136261U;
+	for (unsigned char c : v)
+		h = (h ^ c) * 16777619U;
+	return h;
+}
+
 tSubscriptionId::tSubscriptionId(const tinyxml2::XMLElement *xml)
 {
 	const char* data = xml->GetText();
 	if (data == nullptr)
 		throw DeserializationError(E3201);
-	std::string_view dv(data);
-	if (dv.size() != 12)
-		throw DeserializationError(E3201);
-	auto blob = base64_decode(std::move(dv));
-	if (blob.size() != 8)
-		throw DeserializationError(E3201);
-	tsub_rawkey = le32p_to_cpu(&blob[0]);
-	timeout = std::chrono::minutes(le32p_to_cpu(&blob[4]));
+	auto blob = base64_decode(std::string_view(data));
+	if (blob.size() != sub_id_size) {
+		/* Legacy or foreign ID: parse fine, but never match a subscription */
+		tsub_rawkey = 0;
+		return;
+	}
+	text = data;
+	const uint8_t *p = reinterpret_cast<const uint8_t *>(blob.data());
+	auto cnt = le32p_to_cpu(p);
+	timeout = std::chrono::minutes(le32p_to_cpu(p + 4));
+	bool same_run = memcmp(p + 8, sub_id_nonce().data(), sub_id_nonce().size()) == 0;
+	if (same_run) {
+		tsub_rawkey = cnt;
+		return;
+	}
+	/* From a previous run: unknown, unless it carries recovery data */
+	tsub_rawkey = 0;
+	if (memcmp(p + 24, sub_id_magic, 2) != 0)
+		return;
+	Recovery r;
+	size_t off = 26;
+	r.mask = le16p_to_cpu(p + off); off += 2;
+	r.all = p[off++] != 0;
+	size_t nf = p[off++];
+	if (nf > sub_id_max_fids)
+		return;
+	r.uhash = le32p_to_cpu(p + off); off += 4;
+	for (size_t i = 0; i < nf; ++i, off += 8)
+		r.fids.push_back(le64p_to_cpu(p + off));
+	recov = std::move(r);
+	/* Key space above the counter, derived from the ID so that every
+	 * stream of the same recovered subscription finds the same entry */
+	tsub_rawkey = 0x80000000U | (Recovery::hash(text) & 0x7fffffffU);
 }
 
 void tSubscriptionId::serialize(tinyxml2::XMLElement *xml) const
 {
+	if (!text.empty()) {
+		xml->SetText(text.c_str());
+		return;
+	}
 	uint32_t min = std::chrono::duration_cast<std::chrono::minutes>(timeout).count();
 	uint32_t a[2] = {cpu_to_le32(tsub_rawkey), cpu_to_le32(min)};
-	xml->SetText(base64_encode({reinterpret_cast<const char *>(a), sizeof(a)}).c_str());
+	std::string raw(sub_id_size, '\0');
+	memcpy(raw.data(), a, sizeof(a));
+	memcpy(raw.data() + 8, sub_id_nonce().data(), sub_id_nonce().size());
+	std::seed_seq seq(sub_id_nonce().begin(), sub_id_nonce().end());
+	std::mt19937_64 gen(seq);
+	gen.seed(gen() ^ (static_cast<uint64_t>(tsub_rawkey) << 32 | min));
+	for (size_t i = 24; i < sub_id_size; i += 8) {
+		uint64_t v = gen();
+		memcpy(raw.data() + i, &v, 8);
+	}
+	if (recov.has_value() && recov->fids.size() <= sub_id_max_fids) {
+		size_t off = 24;
+		memcpy(raw.data() + off, sub_id_magic, 2); off += 2;
+		uint16_t m = cpu_to_le16(recov->mask);
+		memcpy(raw.data() + off, &m, 2); off += 2;
+		raw[off++] = recov->all;
+		raw[off++] = static_cast<char>(recov->fids.size());
+		uint32_t h = cpu_to_le32(recov->uhash);
+		memcpy(raw.data() + off, &h, 4); off += 4;
+		for (uint64_t f : recov->fids) {
+			uint64_t v = cpu_to_le64(f);
+			memcpy(raw.data() + off, &v, 8);
+			off += 8;
+		}
+	}
+	xml->SetText(base64_encode(raw).c_str());
 }
 
 tSuggestionsViewOptions::tSuggestionsViewOptions(const tinyxml2::XMLElement *xml) :
